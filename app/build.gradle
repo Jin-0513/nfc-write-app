@@ -1,26 +1,58 @@
+// 이 파일은 "app 모듈"의 빌드 설정입니다.
+// 프로젝트 루트의 build.gradle이 "전체 프로젝트" 설정이라면,
+// 이 파일은 "실제 앱(app 폴더)"에 대한 세부 설정입니다.
+
 plugins {
+    // 안드로이드 앱을 빌드하겠다는 플러그인
     id 'com.android.application'
+    // Kotlin 언어를 안드로이드에서 쓸 수 있게 해주는 플러그인
     id 'org.jetbrains.kotlin.android'
 }
 
 android {
+    // 앱의 고유 패키지 이름 공간. 다른 앱과 겹치면 안 됨
     namespace 'com.jin.nfcwrite'
+
+    // 이 앱을 컴파일할 때 사용할 안드로이드 SDK 버전 (34 = Android 14 기준)
     compileSdk 34
+
     defaultConfig {
+        // 앱의 고유 ID (Play스토어에 올릴 경우 이 값으로 앱이 식별됨)
         applicationId "com.jin.nfcwrite"
+
+        // 이 앱이 설치 가능한 가장 낮은 안드로이드 버전
+        // 26 = Android 8.0 (S20 Ultra는 훨씬 최신이라 문제 없음)
         minSdk 26
+
+        // 이 앱이 타겟으로 하는 안드로이드 버전 (최신 동작 방식 기준)
         targetSdk 34
+
+        // 앱 버전 관리용 숫자 (업데이트할 때마다 증가시킴, 내부 관리용)
         versionCode 1
+        // 사용자에게 보여지는 버전 이름 (예: "1.0", "1.1" 등)
         versionName "1.0"
     }
+
     compileOptions {
+        // Java 17 문법으로 컴파일하겠다는 설정 (Kotlin과 호환을 위해 필요)
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    kotlinOptions { jvmTarget = '17' }
+    kotlinOptions {
+        // Kotlin 코드가 최종적으로 Java 17 바이트코드로 변환됨
+        jvmTarget = '17'
+    }
 }
 
+// 이 앱이 사용하는 외부 라이브러리(의존성) 목록
 dependencies {
+    // 안드로이드 기본 기능(Kotlin 확장 함수 포함)
     implementation 'androidx.core:core-ktx:1.13.1'
+    // 구버전 기기와의 호환성을 위한 UI 컴포넌트 라이브러리
     implementation 'androidx.appcompat:appcompat:1.7.0'
+    // 이미지 선택(갤러리 열기) 같은 "결과를 받는 화면 전환"을 쉽게 해주는 라이브러리
+    implementation 'androidx.activity:activity-ktx:1.9.0'
+    // 코루틴: 이미지 처리, NFC 통신처럼 시간이 걸리는 작업을
+    // 화면이 멈추지 않게 백그라운드에서 처리하기 위한 라이브러리
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
 }
