@@ -5,7 +5,7 @@
     <application
         android:allowBackup="true"
         android:label="NFC Write"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@style/Theme.AppCompat.Light.NoActionBar">
         <activity
             android:name=".MainActivity"
             android:exported="true"
