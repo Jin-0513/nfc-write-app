@@ -132,11 +132,12 @@ class MainActivity : AppCompatActivity() {
      */
     override fun onResume() {
         super.onResume()
-        if (waitingForTag) {
-            nfcAdapter?.enableForegroundDispatch(this, pendingIntent, intentFilters, techLists)
-        }
+        // waitingForTag 조건을 없애고, 앱이 화면에 떠 있는 동안은
+        // 항상 이 앱이 NFC 태그를 독점하도록 설정합니다.
+        // (이래야 어느 화면에 있든 "앱 선택" 팝업이 뜨지 않습니다)
+        nfcAdapter?.enableForegroundDispatch(this, pendingIntent, intentFilters, techLists)
     }
-
+    
     /**
      * 이 액티비티가 화면에서 사라질 때(다른 앱으로 전환, 홈 버튼 등) 호출됩니다.
      * foreground dispatch를 반드시 꺼줘야, 이 앱이 꺼진 뒤에는 다른 앱들
@@ -154,17 +155,15 @@ class MainActivity : AppCompatActivity() {
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-
-        // 쓰기를 기다리는 중이 아니면 무시 (예: 편집 화면에서 실수로 태그가 감지된 경우 방지)
+        // dispatch는 항상 켜져 있지만, 실제로 "쓰기 실행"은
+        // waitingForTag가 true일 때(=쓰기 대기 화면)만 하도록 여기서 걸러줍니다.
+        // 즉, 이미지 선택/편집 화면에서 실수로 배지를 대면
+        // 태그는 이 앱이 받되(팝업은 안 뜸), 아무 동작도 하지 않고 무시됩니다.
         if (!waitingForTag) return
-
-        // 인텐트 안에 담겨온 태그 정보를 꺼냄.
-        // Android 13(TIRAMISU) 이상과 이전 버전은 API가 달라서 분기 처리함
         val tag: Tag? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
             intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
         else
             @Suppress("DEPRECATION") intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
-
         tag?.let { handleTagForWrite(it) }
     }
 
@@ -344,9 +343,8 @@ class MainActivity : AppCompatActivity() {
         ))
 
         // 이 화면부터는 NFC 태그를 기다리는 상태로 전환
+        // (dispatch 자체는 onResume()에서 이미 항상 켜져 있으므로 여기선 플래그만 바꿔줌)
         waitingForTag = true
-        // onResume()을 거치지 않고 지금 바로 켜줘야, 화면 전환 즉시 태그 인식이 가능합니다.
-        nfcAdapter?.enableForegroundDispatch(this, pendingIntent, intentFilters, techLists)
     }
 
     /**
