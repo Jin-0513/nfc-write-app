@@ -25,15 +25,15 @@ object ColorPalette {
      */
     data class PaletteColor(val name: String, val rgb: Int, val code: Int)
 
-    // Spectra 6 (6색 e-ink) 팔레트. 검정/흰색/빨강/노랑/파랑/초록 6가지.
-    // Color.rgb(r, g, b)는 0~255 범위의 R,G,B 값을 하나의 정수 색상값으로 합쳐줍니다.
+    // 제조사(GooDisplay) 회신 기준 정확한 값으로 교체 (2026-07-20)
+    // 참고: 0100(4)은 정의되지 않은 코드라 사용하지 않음(RFU로 추정)
     val SPECTRA6 = listOf(
-        PaletteColor("Black",  Color.rgb(0, 0, 0),       0b000), // 0b000 = 2진수 000 = 십진수 0
-        PaletteColor("White",  Color.rgb(255, 255, 255), 0b001),
-        PaletteColor("Red",    Color.rgb(200, 0, 0),     0b010),
-        PaletteColor("Yellow", Color.rgb(255, 210, 0),   0b011),
-        PaletteColor("Blue",   Color.rgb(0, 60, 160),    0b100),
-        PaletteColor("Green",  Color.rgb(0, 130, 60),    0b101)
+        PaletteColor("Black",  Color.parseColor("#000000"), 0b0000), // 0
+        PaletteColor("White",  Color.parseColor("#FFFFFF"), 0b0001), // 1
+        PaletteColor("Yellow", Color.parseColor("#FFFF00"), 0b0010), // 2
+        PaletteColor("Red",    Color.parseColor("#FF0000"), 0b0011), // 3
+        PaletteColor("Blue",   Color.parseColor("#0000FF"), 0b0101), // 5
+        PaletteColor("Green",  Color.parseColor("#00FF00"), 0b0110)  // 6
     )
 
     /**
