@@ -379,9 +379,8 @@ class MainActivity : AppCompatActivity() {
                 isoDep.connect()
                 isoDep.timeout = 5000 // 응답을 5초까지 기다림
 
-                // TODO: 여기에 VERIFY PIN('20') 명령 전송 코드가 필요합니다.
-                // 문서 7.2절 기준, 초기 PIN은 '1122334455'로 추정되나 이 제품
-                // 전용 PIN이 다를 수 있어 확인 필요 (문의 4번 항목)
+                // 제조사 확인(2026-07-20): 이 제품은 기본 PIN이 없음 = PIN 인증
+                // 기능 자체가 비활성화되어 있어 VERIFY PIN 절차가 필요 없습니다.
 
                 // 1단계: 이미지를 배지가 이해하는 형식으로 인코딩
                 val encoded = encodeImageForWrite(bitmap)
