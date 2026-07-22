@@ -23,6 +23,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import android.nfc.TagLostException
 
 /**
  * MainActivity
@@ -40,8 +41,7 @@ import kotlinx.coroutines.withContext
  */
 class MainActivity : AppCompatActivity() {
 
-    // ===== 배지 관련 설정값 (아직 확정 안 됨, 회신 오면 교체) =====
-    // TODO: 제조사 회신(월요일) 후 정확한 해상도로 교체
+    // ===== 배지 관련 설정값 =====
     private var targetWidth = 400
     private var targetHeight = 600
 
