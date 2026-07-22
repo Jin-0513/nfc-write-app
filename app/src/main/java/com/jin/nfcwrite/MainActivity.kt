@@ -74,6 +74,21 @@ class MainActivity : AppCompatActivity() {
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
     private var waitingForTag = false // 지금 NFC 태그를 기다리는 중인지 여부
 
+    // ===== 쓰기 이어하기(resume)용 상태 =====
+    // 통신 중간에 태그가 끊기면(TagLostException) 처음부터 다시 인코딩/전송하지 않고
+    // 여기 저장된 지점부터 이어서 보내기 위한 값들입니다.
+    private var pendingImageData: ByteArray? = null // 인코딩된 전체 이미지 데이터
+    private var pendingSeq: Int = 0                 // 다음에 보낼 패킷 순번
+    private var pendingOffset: Int = 0              // 다음에 보낼 바이트 위치
+    private var pendingImageIndex: Int = 0          // 쓰는 중인 이미지 슬롯 번호
+
+    /** 이어하기 상태를 초기화합니다. 새 이미지를 고르거나 알고리즘을 바꾸면 호출합니다. */
+    private fun resetPendingWrite() {
+        pendingImageData = null
+        pendingSeq = 0
+        pendingOffset = 0
+    }
+
     /**
      * 갤러리(또는 파일 앱)에서 이미지를 선택하는 화면을 여는 "런처".
      * 안드로이드 최신 방식(Activity Result API)으로, 예전처럼
@@ -171,6 +186,7 @@ class MainActivity : AppCompatActivity() {
     // 화면 1: 이미지 선택
     // ============================================================
     private fun showPickerScreen() {
+        resetPendingWrite() // 추가
         waitingForTag = false // 이 화면에서는 NFC를 기다리지 않음
         rootContainer.removeAllViews() // 이전 화면의 뷰들을 다 지움
 
@@ -240,6 +256,7 @@ class MainActivity : AppCompatActivity() {
      * 변환이 끝나면 편집 화면을 그립니다.
      */
     private fun applyAlgorithmAndShowEditor() {
+        resetPendingWrite() // 추가
         val src = originalBitmap ?: return
 
         // Dispatchers.Default: CPU 연산이 많은 작업(이미지 픽셀 처리)에
@@ -334,7 +351,10 @@ class MainActivity : AppCompatActivity() {
         }
         val cancelButton = Button(this).apply {
             text = "취소"
-            setOnClickListener { showEditorScreen() }
+            setOnClickListener {
+                resetPendingWrite() // 추가
+                showEditorScreen()
+            }
         }
         layout.addView(statusText)
         layout.addView(cancelButton)
@@ -350,58 +370,78 @@ class MainActivity : AppCompatActivity() {
     /**
      * NFC 태그(배지)가 감지되면 실제로 데이터를 전송하는 함수.
      * FMSC 프로토콜 문서에 나온 D2(Load Image) -> D4(Redraw) -> DE(Busy 확인)
-     * 순서를 그대로 구현한 뼈대입니다.
+     * 순서를 그대로 구현합니다.
      *
-     * ⚠️ 아직 미완성인 부분(TODO):
-     * - PIN 인증(VERIFY PIN '20') 절차가 빠져있음
-     * - encodeImageForWrite()의 비트 인코딩 방식이 임시값 (실제 배지 스펙 아님)
-     * 제조사 회신 오면 이 두 부분을 채워야 실제로 화면에 이미지가 정상 표시됩니다.
+     * 이어하기(resume) 지원: pendingImageData가 이미 있다면(=이전 시도에서
+     * 중간에 끊긴 상태) 이미지를 다시 인코딩하지 않고, 저장된 seq/offset부터
+     * 이어서 전송합니다.
      */
     private fun handleTagForWrite(tag: Tag) {
-        val bitmap = processedBitmap ?: run {
-            runOnUiThread { statusText?.text = "이미지가 없습니다" }
-            return
-        }
-        waitingForTag = false // 태그를 이미 받았으니 더 이상 기다리지 않음
-        runOnUiThread { statusText?.text = "쓰는 중... 배지를 떼지 마세요" }
+        waitingForTag = false
 
-        // NFC 통신은 시간이 걸리고 화면을 멈추면 안 되므로 IO 스레드에서 처리
         CoroutineScope(Dispatchers.IO).launch {
-            // IsoDep: ISO 14443-4 방식(스마트카드 APDU 통신)으로 태그와 대화하기 위한 객체
             val isoDep = IsoDep.get(tag)
             if (isoDep == null) {
                 withContext(Dispatchers.Main) { statusText?.text = "지원하지 않는 태그입니다" }
+                waitingForTag = true
                 return@launch
             }
             try {
-                // connect(): 실제로 태그와 통신 채널을 엽니다 (물리적으로 태그가
-                // 폰에 계속 붙어있어야 이 연결이 유지됩니다)
                 isoDep.connect()
-                isoDep.timeout = 5000 // 응답을 5초까지 기다림
+                isoDep.timeout = 5000
 
                 // 제조사 확인(2026-07-20): 이 제품은 기본 PIN이 없음 = PIN 인증
                 // 기능 자체가 비활성화되어 있어 VERIFY PIN 절차가 필요 없습니다.
 
-                // 1단계: 이미지를 배지가 이해하는 형식으로 인코딩
-                val encoded = encodeImageForWrite(bitmap)
+                // 처음 쓰기 시작인 경우에만 이미지를 새로 인코딩합니다.
+                if (pendingImageData == null) {
+                    val bitmap = processedBitmap ?: run {
+                        withContext(Dispatchers.Main) { statusText?.text = "이미지가 없습니다" }
+                        waitingForTag = true
+                        return@launch
+                    }
+                    pendingImageData = encodeImageForWrite(bitmap)
+                    pendingSeq = 0
+                    pendingOffset = 0
+                    pendingImageIndex = 0
+                }
 
-                // 2단계: D2(Load Image) 명령으로 250바이트씩 나눠서 전송
-                sendLoadImageCommands(isoDep, encoded, imageIndex = 0)
+                val data = pendingImageData!!
 
-                // 3단계: D4(Redraw Screen) 명령으로 화면 갱신 지시
-                isoDep.transceive(buildRedrawApdu(imageIndex = 0))
+                // 이어하기를 지원하는 전송 함수 (내부에서 pendingSeq/pendingOffset을 갱신)
+                sendLoadImageCommandsResumable(isoDep, data, pendingImageIndex)
 
-                // 4단계: DE(Get Busy Status) 명령으로 화면 갱신이 끝날 때까지 대기
+                withContext(Dispatchers.Main) { statusText?.text = "화면 갱신 중..." }
+                isoDep.transceive(buildRedrawApdu(pendingImageIndex))
                 waitUntilNotBusy(isoDep)
+                isoDep.close()
 
-                isoDep.close() // 통신 채널 닫기
+                // 성공적으로 완료됐으므로 이어하기 상태를 깨끗이 지웁니다.
+                resetPendingWrite()
 
                 withContext(Dispatchers.Main) { statusText?.text = "쓰기 완료!" }
+
+            } catch (e: TagLostException) {
+                // 통신 도중 배지가 멀어지는 등으로 연결이 끊긴 경우.
+                // pendingSeq/pendingOffset은 그대로 남아있으므로, 다음에 태그가
+                // 다시 감지되면 handleTagForWrite()가 이어서 전송을 재개합니다.
+                val total = totalChunksOf(pendingImageData)
+                withContext(Dispatchers.Main) {
+                    statusText?.text = "연결이 끊어졌습니다 ($pendingSeq / $total 전송됨)\n배지를 다시 대주세요"
+                }
+                waitingForTag = true
+
             } catch (e: Exception) {
-                // 통신 중 어떤 오류든 발생하면(태그가 떨어짐, 타임아웃 등) 여기서 잡힘
                 withContext(Dispatchers.Main) { statusText?.text = "쓰기 실패: ${e.message}" }
+                waitingForTag = true
             }
         }
+    }
+
+    /** 전체 청크 개수를 계산하는 헬퍼 (진행률 메시지 표시용) */
+    private fun totalChunksOf(data: ByteArray?): Int {
+        val size = data?.size ?: 0
+        return (size + 249) / 250
     }
 
     /**
@@ -437,25 +477,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 인코딩된 전체 이미지 데이터를 250바이트씩 잘라서
-     * D2(Load Image) 명령으로 순서대로 전송합니다.
-     * (프로토콜 문서 2.1절: "250바이트 단위로 분할, 마지막 패킷만 예외" 규칙을 따름)
+     * D2(Load Image) 명령을 250바이트씩 나눠 순서대로 전송합니다.
+     *
+     * 지역 변수(seq, offset) 대신 클래스 필드(pendingSeq, pendingOffset)를
+     * 사용합니다. 이렇게 하면 도중에 TagLostException이 발생해도
+     * "어디까지 보냈는지"가 함수 밖에도 남아있어서, 다음 번 호출 때
+     * 그 지점부터 이어갈 수 있습니다.
+     *
+     * suspend 함수로 선언한 이유: 매 청크 전송 후 진행률 텍스트를
+     * 메인 스레드에서 갱신해야 하는데, 이건 코루틴 컨텍스트 안에서만 가능합니다.
      */
-    private fun sendLoadImageCommands(isoDep: IsoDep, data: ByteArray, imageIndex: Int) {
+    private suspend fun sendLoadImageCommandsResumable(isoDep: IsoDep, data: ByteArray, imageIndex: Int) {
         val chunkSize = 250
-        var seq = 0       // 패킷 순번 (0부터 시작)
-        var offset = 0     // 지금까지 보낸 바이트 위치
+        val totalChunks = totalChunksOf(data)
 
-        while (offset < data.size) {
-            // 이번에 보낼 구간의 끝 위치 (마지막 조각은 250바이트보다 짧을 수 있음)
-            val end = minOf(offset + chunkSize, data.size)
-            val chunk = data.copyOfRange(offset, end)
+        // pendingOffset이 0이 아니라면(=이어하기 상황) 그 지점부터 루프가 시작됩니다.
+        while (pendingOffset < data.size) {
+            val end = minOf(pendingOffset + chunkSize, data.size)
+            val chunk = data.copyOfRange(pendingOffset, end)
 
-            // transceive: 명령(APDU)을 태그에 보내고 응답을 받는 함수
-            isoDep.transceive(buildLoadImageApdu(imageIndex, seq, chunk))
+            // 여기서 TagLostException이 발생하면, pendingOffset/pendingSeq는
+            // "이번 청크를 보내기 직전" 값 그대로 남아있으므로 이 청크부터 다시 보내면 됩니다.
+            isoDep.transceive(buildLoadImageApdu(imageIndex, pendingSeq, chunk))
 
-            offset = end
-            seq++
+            pendingOffset = end
+            pendingSeq++
+
+            withContext(Dispatchers.Main) {
+                statusText?.text = "전송 중... $pendingSeq / $totalChunks"
+            }
         }
     }
 
