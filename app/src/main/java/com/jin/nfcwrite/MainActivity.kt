@@ -406,41 +406,33 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * 비트맵의 각 픽셀을 팔레트 색상 코드로 바꾸고, 이를 이진 데이터(바이트 배열)로 압축합니다.
-     *
-     * ⚠️ TODO: 이 함수는 정확한 스펙을 모르는 상태에서 "합리적으로 추정한" 임시 구현입니다.
-     * 현재는 픽셀당 3비트(0~5까지 표현 가능, 우리 팔레트는 6색이라 딱 맞음)를 사용해서
-     * 단순히 순서대로 이어붙이는 방식입니다.
-     * 실제 칩이 픽셀 순서를 다르게 기대하거나(예: 색상별로 별도 비트플레인을
-     * 나눠 보내는 방식), 픽셀당 비트 수가 다르거나, 패딩 규칙이 다를 수 있어서
-     * 제조사 회신을 받으면 이 함수 내부 로직을 전면 교체해야 합니다.
+     * 제조사 회신(2026-07-20) 기준 확정된 인코딩 방식:
+     * - 무압축, 픽셀당 4비트
+     * - 4비트는 정확히 1바이트의 절반이므로, 픽셀 2개를 묶어서 1바이트로 만듭니다.
+     *   (앞쪽 픽셀 코드가 상위 4비트, 뒤쪽 픽셀 코드가 하위 4비트)
      */
     private fun encodeImageForWrite(bitmap: Bitmap): ByteArray {
         val w = bitmap.width
         val h = bitmap.height
 
-        // 비트를 순서대로 이어붙이기 위해 문자열로 임시 조립 (00101011... 형태)
-        // 참고: 실제 프로덕션 코드라면 성능을 위해 문자열 대신 비트 연산을 직접 쓰는 게
-        // 좋지만, 지금은 이해하기 쉬운 방식으로 작성했습니다.
-        val bits = StringBuilder()
+        // 모든 픽셀을 순서대로(왼쪽→오른쪽, 위→아래) 4비트 코드로 변환해 리스트에 담음
+        val codes = ArrayList<Int>(w * h)
         for (y in 0 until h) {
             for (x in 0 until w) {
                 val matched = ColorPalette.nearestColor(bitmap.getPixel(x, y))
-                // code(0~5)를 3자리 2진수 문자열로 변환 (예: 5 -> "101")
-                // padStart(3, '0'): 자릿수가 모자라면 앞에 0을 채움
-                bits.append(matched.code.toString(2).padStart(3, '0'))
+                codes.add(matched.code) // 0~6 사이의 값 (4비트로 표현 가능)
             }
         }
 
-        // 비트 문자열을 8비트씩 묶어서 실제 바이트 배열로 변환
-        val byteCount = (bits.length + 7) / 8  // 올림 나눗셈 (남는 비트도 1바이트로 처리)
-        val result = ByteArray(byteCount)
-        for (i in bits.indices) {
-            if (bits[i] == '1') {
-                // i번째 비트를 result[i/8] 바이트의 적절한 위치에 1로 세팅
-                // (7 - (i % 8)): 바이트 안에서 왼쪽(MSB)부터 채우기 위한 위치 계산
-                result[i / 8] = (result[i / 8].toInt() or (1 shl (7 - (i % 8)))).toByte()
-            }
+        // 픽셀 총 개수가 홀수면 마지막 1개가 짝이 안 맞으므로,
+        // 짝을 맞추기 위해 검정(0000)을 하나 더 채워 넣음
+        if (codes.size % 2 != 0) codes.add(0)
+
+        val result = ByteArray(codes.size / 2)
+        for (i in result.indices) {
+            val high = codes[i * 2] and 0x0F      // 앞 픽셀 -> 상위 4비트
+            val low = codes[i * 2 + 1] and 0x0F    // 뒤 픽셀 -> 하위 4비트
+            result[i] = ((high shl 4) or low).toByte()
         }
         return result
     }
