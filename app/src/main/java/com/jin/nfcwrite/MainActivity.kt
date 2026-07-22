@@ -412,7 +412,7 @@ class MainActivity : AppCompatActivity() {
                 sendLoadImageCommandsResumable(isoDep, data, pendingImageIndex)
 
                 withContext(Dispatchers.Main) { statusText?.text = "화면 갱신 중..." }
-                isoDep.transceive(buildRedrawApdu(pendingImageIndex))
+                transceiveChecked(isoDep, buildRedrawApdu(pendingImageIndex))
                 waitUntilNotBusy(isoDep)
                 isoDep.close()
 
@@ -444,6 +444,27 @@ class MainActivity : AppCompatActivity() {
         return (size + 249) / 250
     }
 
+    /**
+     * APDU를 보내고, 응답 끝의 상태코드(SW1 SW2)가 성공('90 00')인지 검증합니다.
+     *
+     * 기존 코드는 isoDep.transceive()가 예외만 안 던지면 무조건 성공이라고
+     * 가정했는데, 이게 문제였습니다. 칩이 명령을 거부해도(순번 불일치,
+     * busy 상태 등) 예외 없이 정상적으로 "오류 코드가 담긴" 응답을 돌려줍니다.
+     * 이 오류를 무시하고 계속 진행한 게 이미지가 부분적으로만 써진 원인입니다.
+     */
+    private fun transceiveChecked(isoDep: IsoDep, apdu: ByteArray): ByteArray {
+        val response = isoDep.transceive(apdu)
+        if (response.size < 2) {
+            throw java.io.IOException("응답이 너무 짧습니다 (${response.size} bytes)")
+        }
+        val sw1 = response[response.size - 2]
+        val sw2 = response[response.size - 1]
+        if (sw1 != 0x90.toByte() || sw2 != 0x00.toByte()) {
+            throw java.io.IOException("칩 오류 응답: SW=%02X%02X".format(sw1, sw2))
+        }
+        return response
+    }
+    
     /**
      * 제조사 회신(2026-07-20) 기준 확정된 인코딩 방식:
      * - 무압축, 픽셀당 4비트
@@ -490,15 +511,37 @@ class MainActivity : AppCompatActivity() {
     private suspend fun sendLoadImageCommandsResumable(isoDep: IsoDep, data: ByteArray, imageIndex: Int) {
         val chunkSize = 250
         val totalChunks = totalChunksOf(data)
+        val maxRetriesPerPacket = 3
 
-        // pendingOffset이 0이 아니라면(=이어하기 상황) 그 지점부터 루프가 시작됩니다.
         while (pendingOffset < data.size) {
             val end = minOf(pendingOffset + chunkSize, data.size)
             val chunk = data.copyOfRange(pendingOffset, end)
+            val apdu = buildLoadImageApdu(imageIndex, pendingSeq, chunk)
 
-            // 여기서 TagLostException이 발생하면, pendingOffset/pendingSeq는
-            // "이번 청크를 보내기 직전" 값 그대로 남아있으므로 이 청크부터 다시 보내면 됩니다.
-            isoDep.transceive(buildLoadImageApdu(imageIndex, pendingSeq, chunk))
+            var attempt = 0
+            var success = false
+            var lastError: Exception? = null
+
+            while (attempt < maxRetriesPerPacket && !success) {
+                try {
+                    // 상태코드까지 검증하는 버전으로 교체
+                    transceiveChecked(isoDep, apdu)
+                    success = true
+                } catch (e: TagLostException) {
+                    // 물리적으로 태그가 떨어진 경우는 여기서 처리하지 않고
+                    // 바로 위(handleTagForWrite)의 catch로 넘겨서
+                    // "배지를 다시 대주세요" 흐름을 그대로 타게 합니다.
+                    throw e
+                } catch (e: Exception) {
+                    // 순수 프로토콜 오류(잘못된 상태코드 등)는 같은 패킷을 재시도
+                    lastError = e
+                    attempt++
+                }
+            }
+
+            if (!success) {
+                throw lastError ?: Exception("알 수 없는 오류로 패킷 전송 실패 (seq=$pendingSeq)")
+            }
 
             pendingOffset = end
             pendingSeq++
@@ -550,13 +593,12 @@ class MainActivity : AppCompatActivity() {
     private fun waitUntilNotBusy(isoDep: IsoDep) {
         var busy = true
         var attempts = 0
-        // 최대 50번(약 10초)까지만 시도 - 무한 루프 방지
         while (busy && attempts < 50) {
-            val resp = isoDep.transceive(buildBusyStatusApdu())
+            val resp = transceiveChecked(isoDep, buildBusyStatusApdu())
             if (resp.isNotEmpty() && resp[0] == 0x00.toByte()) {
-                busy = false // 갱신 완료
+                busy = false
             } else {
-                Thread.sleep(200) // 200ms 쉬었다가 다시 확인 (너무 자주 물어보면 비효율적)
+                Thread.sleep(200)
             }
             attempts++
         }
