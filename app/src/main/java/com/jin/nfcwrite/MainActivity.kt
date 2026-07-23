@@ -466,6 +466,8 @@ class MainActivity : AppCompatActivity() {
      */
     private fun transceiveChecked(isoDep: IsoDep, apdu: ByteArray): ByteArray {
         val response = isoDep.transceive(apdu)
+        android.util.Log.d("NFC_DEBUG", "SEND: ${apdu.joinToString(" ") { "%02X".format(it) }}")
+        android.util.Log.d("NFC_DEBUG", "RECV: ${response.joinToString(" ") { "%02X".format(it) }}")
         if (response.size < 2) {
             throw java.io.IOException("응답이 너무 짧습니다 (${response.size} bytes)")
         }
