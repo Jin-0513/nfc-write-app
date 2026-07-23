@@ -422,17 +422,26 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) { statusText?.text = "쓰기 완료!" }
 
             } catch (e: TagLostException) {
-                // 통신 도중 배지가 멀어지는 등으로 연결이 끊긴 경우.
-                // pendingSeq/pendingOffset은 그대로 남아있으므로, 다음에 태그가
-                // 다시 감지되면 handleTagForWrite()가 이어서 전송을 재개합니다.
+                // 연결이 끊긴 채로 방치된 IsoDep 세션을 정리합니다.
+                // (닫지 않고 두면 다음 태그 인식이 foreground dispatch로
+                //  안 잡히고 시스템 기본 팝업으로 새어나가는 경우가 있습니다)
+                try { isoDep.close() } catch (_: Exception) {}
+
                 val total = totalChunksOf(pendingImageData)
                 withContext(Dispatchers.Main) {
                     statusText?.text = "연결이 끊어졌습니다 ($pendingSeq / $total 전송됨)\n배지를 다시 대주세요"
+                    // 혹시 시스템이 dispatch를 놓쳤을 경우를 대비해 명시적으로 재등록
+                    nfcAdapter?.enableForegroundDispatch(this@MainActivity, pendingIntent, intentFilters, techLists)
                 }
                 waitingForTag = true
 
             } catch (e: Exception) {
-                withContext(Dispatchers.Main) { statusText?.text = "쓰기 실패: ${e.message}" }
+                try { isoDep.close() } catch (_: Exception) {}
+
+                withContext(Dispatchers.Main) {
+                    statusText?.text = "쓰기 실패: ${e.message}"
+                    nfcAdapter?.enableForegroundDispatch(this@MainActivity, pendingIntent, intentFilters, techLists)
+                }
                 waitingForTag = true
             }
         }
