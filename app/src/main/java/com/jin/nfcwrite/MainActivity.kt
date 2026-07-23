@@ -77,8 +77,6 @@ class MainActivity : AppCompatActivity() {
     private var zoomImageView: ZoomableImageView? = null  // 편집 화면의 이미지 뷰 (줌 가능)
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
 
-    private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
-
     // ===== 디버그 로그 =====
     // 매 NFC 명령의 송신/수신 내역을 여기 쌓아둡니다.
     // 에러 발생 시 화면에서 바로 확인하고, 필요하면 클립보드로 복사할 수 있습니다.
