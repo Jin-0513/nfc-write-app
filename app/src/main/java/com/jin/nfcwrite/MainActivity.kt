@@ -24,6 +24,10 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import android.nfc.TagLostException
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.ScrollView
+import android.widget.Toast
 
 /**
  * MainActivity
@@ -72,6 +76,18 @@ class MainActivity : AppCompatActivity() {
 
     private var zoomImageView: ZoomableImageView? = null  // 편집 화면의 이미지 뷰 (줌 가능)
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
+
+    private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
+
+    // ===== 디버그 로그 =====
+    // 매 NFC 명령의 송신/수신 내역을 여기 쌓아둡니다.
+    // 에러 발생 시 화면에서 바로 확인하고, 필요하면 클립보드로 복사할 수 있습니다.
+    private val debugLog = StringBuilder()
+
+    private fun logDebug(line: String) {
+        debugLog.append(line).append("\n")
+    }
+    
     private var waitingForTag = false // 지금 NFC 태그를 기다리는 중인지 여부
 
     // ===== 쓰기 이어하기(resume)용 상태 =====
@@ -339,6 +355,8 @@ class MainActivity : AppCompatActivity() {
     // ============================================================
     private fun showWriteScreen() {
         rootContainer.removeAllViews()
+        debugLog.clear() // 새로 쓰기 시작할 때 이전 로그는 지움
+
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
@@ -352,21 +370,64 @@ class MainActivity : AppCompatActivity() {
         val cancelButton = Button(this).apply {
             text = "취소"
             setOnClickListener {
-                resetPendingWrite() // 추가
+                resetPendingWrite()
                 showEditorScreen()
             }
         }
+        val logButton = Button(this).apply {
+            text = "로그 보기"
+            setOnClickListener { showLogScreen() }
+        }
         layout.addView(statusText)
         layout.addView(cancelButton)
+        layout.addView(logButton)
         rootContainer.addView(layout, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
 
-        // 이 화면부터는 NFC 태그를 기다리는 상태로 전환
-        // (dispatch 자체는 onResume()에서 이미 항상 켜져 있으므로 여기선 플래그만 바꿔줌)
         waitingForTag = true
     }
 
+    /** 지금까지 쌓인 SEND/RECV 로그를 스크롤 가능한 화면으로 보여줍니다. */
+    private fun showLogScreen() {
+        rootContainer.removeAllViews()
+
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val logText = TextView(this).apply {
+            text = if (debugLog.isEmpty()) "아직 로그가 없습니다" else debugLog.toString()
+            textSize = 12f
+            setPadding(20, 20, 20, 20)
+        }
+        val scrollView = ScrollView(this).apply { addView(logText) }
+        root.addView(scrollView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        val buttonRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(20, 20, 20, 40)
+        }
+        val copyButton = Button(this).apply {
+            text = "복사"
+            setOnClickListener {
+                val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+                clipboard.setPrimaryClip(ClipData.newPlainText("nfc_log", debugLog.toString()))
+                Toast.makeText(this@MainActivity, "클립보드에 복사됨", Toast.LENGTH_SHORT).show()
+            }
+        }
+        val backButton = Button(this).apply {
+            text = "뒤로"
+            setOnClickListener { showWriteScreen() }
+        }
+        buttonRow.addView(copyButton)
+        buttonRow.addView(backButton)
+        root.addView(buttonRow)
+
+        rootContainer.addView(root, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+    }
+    
     /**
      * NFC 태그(배지)가 감지되면 실제로 데이터를 전송하는 함수.
      * FMSC 프로토콜 문서에 나온 D2(Load Image) -> D4(Redraw) -> DE(Busy 확인)
@@ -465,9 +526,12 @@ class MainActivity : AppCompatActivity() {
      * 이 오류를 무시하고 계속 진행한 게 이미지가 부분적으로만 써진 원인입니다.
      */
     private fun transceiveChecked(isoDep: IsoDep, apdu: ByteArray): ByteArray {
+        val sendHex = apdu.joinToString(" ") { "%02X".format(it) }
         val response = isoDep.transceive(apdu)
-        android.util.Log.d("NFC_DEBUG", "SEND: ${apdu.joinToString(" ") { "%02X".format(it) }}")
-        android.util.Log.d("NFC_DEBUG", "RECV: ${response.joinToString(" ") { "%02X".format(it) }}")
+        val recvHex = response.joinToString(" ") { "%02X".format(it) }
+        logDebug("SEND: $sendHex")
+        logDebug("RECV: $recvHex")
+
         if (response.size < 2) {
             throw java.io.IOException("응답이 너무 짧습니다 (${response.size} bytes)")
         }
