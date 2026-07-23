@@ -393,18 +393,21 @@ class MainActivity : AppCompatActivity() {
                 // 제조사 확인(2026-07-20): 이 제품은 기본 PIN이 없음 = PIN 인증
                 // 기능 자체가 비활성화되어 있어 VERIFY PIN 절차가 필요 없습니다.
 
-                // 처음 쓰기 시작인 경우에만 이미지를 새로 인코딩합니다.
-                if (pendingImageData == null) {
-                    val bitmap = processedBitmap ?: run {
-                        withContext(Dispatchers.Main) { statusText?.text = "이미지가 없습니다" }
-                        waitingForTag = true
-                        return@launch
-                    }
-                    pendingImageData = encodeImageForWrite(bitmap)
-                    pendingSeq = 0
-                    pendingOffset = 0
-                    pendingImageIndex = 0
+                // 칩은 연결(connect)이 끊기면 이전 세션의 진행 상태를 유지하지
+                // 않는 것으로 확인됐습니다 (SW=6A86 P1/P2 오류 발생).
+                // 따라서 재연결 시 이어서 보내지 않고, 매번 새 연결마다
+                // 처음(0번 패킷)부터 전체를 다시 전송합니다.
+                val bitmap = processedBitmap ?: run {
+                    withContext(Dispatchers.Main) { statusText?.text = "이미지가 없습니다" }
+                    waitingForTag = true
+                    return@launch
                 }
+                if (pendingImageData == null) {
+                    pendingImageData = encodeImageForWrite(bitmap)
+                }
+                pendingSeq = 0
+                pendingOffset = 0
+                pendingImageIndex = 0
 
                 val data = pendingImageData!!
 
