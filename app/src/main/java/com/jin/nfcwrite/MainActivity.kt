@@ -88,19 +88,35 @@ class MainActivity : AppCompatActivity() {
     
     private var waitingForTag = false // 지금 NFC 태그를 기다리는 중인지 여부
 
-    // ===== 쓰기 이어하기(resume)용 상태 =====
-    // 통신 중간에 태그가 끊기면(TagLostException) 처음부터 다시 인코딩/전송하지 않고
-    // 여기 저장된 지점부터 이어서 보내기 위한 값들입니다.
-    private var pendingImageData: ByteArray? = null // 인코딩된 전체 이미지 데이터
-    private var pendingSeq: Int = 0                 // 다음에 보낼 패킷 순번
-    private var pendingOffset: Int = 0              // 다음에 보낼 바이트 위치
-    private var pendingImageIndex: Int = 0          // 쓰는 중인 이미지 슬롯 번호
+    // ===== 쓰기 이어하기(resume) + 슬롯 분할 실험용 상태 =====
+    // 실측 결과: D2(Load Image) 한 세션은 정확히 30,000바이트에서 SW=6A86으로 거부됨.
+    // 120,000바이트 전체 이미지를 30,000바이트씩 4개의 imageIndex(슬롯)로 나눠
+    // 전송하는 실험입니다. 제조사 확인 전까지는 추정 기반 구현입니다.
+    private val SLOT_SIZE = 30000
+    private val NUM_SLOTS = 4 // 120,000 / 30,000
 
-    /** 이어하기 상태를 초기화합니다. 새 이미지를 고르거나 알고리즘을 바꾸면 호출합니다. */
+    private var pendingImageData: ByteArray? = null // 인코딩된 전체 이미지 데이터 (120,000바이트)
+    private var pendingSlotIndex: Int = 0            // 지금 쓰고 있는 슬롯(imageIndex) 번호 (0~3)
+    private var pendingSeq: Int = 0                  // 현재 슬롯 안에서의 D2 패킷 순번
+    private var pendingSlotOffset: Int = 0           // 현재 슬롯 안에서의 바이트 오프셋
+
+    /** 이어하기 상태를 완전히 초기화합니다. 새 이미지를 고르거나 알고리즘을 바꾸면 호출합니다. */
     private fun resetPendingWrite() {
         pendingImageData = null
+        pendingSlotIndex = 0
         pendingSeq = 0
-        pendingOffset = 0
+        pendingSlotOffset = 0
+    }
+
+    /**
+     * 재연결(태그 다시 대기) 시 호출합니다.
+     * 실측 결과, 연결이 끊기면 칩은 진행 중이던 세션의 패킷 순번 기억을 유지하지
+     * 않는 것으로 확인됐습니다. 따라서 "현재 슬롯"은 처음(seq=0)부터 다시 보내되,
+     * 이미 완료된 이전 슬롯들은 건너뜁니다(이미 칩에 저장되어 있다고 가정).
+     */
+    private fun restartCurrentSlot() {
+        pendingSeq = 0
+        pendingSlotOffset = 0
     }
 
     /**
@@ -449,57 +465,72 @@ class MainActivity : AppCompatActivity() {
                 isoDep.connect()
                 isoDep.timeout = 5000
 
-                // 제조사 확인(2026-07-20): 이 제품은 기본 PIN이 없음 = PIN 인증
-                // 기능 자체가 비활성화되어 있어 VERIFY PIN 절차가 필요 없습니다.
+                // 제조사 확인(2026-07-20): 이 제품은 기본 PIN이 없음 = PIN 인증 불필요
 
-                // 칩은 연결(connect)이 끊기면 이전 세션의 진행 상태를 유지하지
-                // 않는 것으로 확인됐습니다 (SW=6A86 P1/P2 오류 발생).
-                // 따라서 재연결 시 이어서 보내지 않고, 매번 새 연결마다
-                // 처음(0번 패킷)부터 전체를 다시 전송합니다.
-                val bitmap = processedBitmap ?: run {
-                    withContext(Dispatchers.Main) { statusText?.text = "이미지가 없습니다" }
-                    waitingForTag = true
-                    return@launch
-                }
                 if (pendingImageData == null) {
+                    // 완전히 처음 시작하는 경우: 이미지를 인코딩하고 슬롯 상태 초기화
+                    val bitmap = processedBitmap ?: run {
+                        withContext(Dispatchers.Main) { statusText?.text = "이미지가 없습니다" }
+                        waitingForTag = true
+                        return@launch
+                    }
                     pendingImageData = encodeImageForWrite(bitmap)
+                    pendingSlotIndex = 0
+                    pendingSeq = 0
+                    pendingSlotOffset = 0
+                } else {
+                    // 재연결인 경우: 현재 슬롯만 처음부터 다시 시작 (이전 완료 슬롯은 유지)
+                    restartCurrentSlot()
                 }
-                pendingSeq = 0
-                pendingOffset = 0
-                pendingImageIndex = 0
 
                 val data = pendingImageData!!
+                logDebug("=== 실험: ${NUM_SLOTS}개 슬롯(각 ${SLOT_SIZE}바이트)으로 분할 전송 시작 ===")
 
-                // 이어하기를 지원하는 전송 함수 (내부에서 pendingSeq/pendingOffset을 갱신)
-                sendLoadImageCommandsResumable(isoDep, data, pendingImageIndex)
+                // 아직 안 끝난 슬롯부터 순서대로 전송
+                while (pendingSlotIndex < NUM_SLOTS) {
+                    val slotStart = pendingSlotIndex * SLOT_SIZE
+                    val slotEnd = minOf(slotStart + SLOT_SIZE, data.size)
+                    val slotData = data.copyOfRange(slotStart, slotEnd)
 
-                withContext(Dispatchers.Main) { statusText?.text = "화면 갱신 중..." }
-                transceiveChecked(isoDep, buildRedrawApdu(pendingImageIndex))
+                    withContext(Dispatchers.Main) {
+                        statusText?.text = "슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS 전송 중..."
+                    }
+                    logDebug("--- 슬롯 $pendingSlotIndex 시작 (${slotData.size} bytes) ---")
+
+                    sendSlotResumable(isoDep, slotData, pendingSlotIndex)
+
+                    logDebug("--- 슬롯 $pendingSlotIndex 완료 ---")
+                    pendingSlotIndex++
+                    pendingSeq = 0
+                    pendingSlotOffset = 0
+                }
+
+                // 모든 슬롯 전송 완료. 화면 갱신은 아직 정확한 방식을 모르므로
+                // 일단 imageIndex=0으로 시도해봅니다 (추측, 틀릴 수 있음).
+                withContext(Dispatchers.Main) { statusText?.text = "화면 갱신 시도 중... (실험)" }
+                logDebug("=== 전송 완료, Redraw(imageIndex=0) 시도 ===")
+
+                transceiveChecked(isoDep, buildRedrawApdu(0))
                 waitUntilNotBusy(isoDep)
                 isoDep.close()
 
-                // 성공적으로 완료됐으므로 이어하기 상태를 깨끗이 지웁니다.
                 resetPendingWrite()
-
-                withContext(Dispatchers.Main) { statusText?.text = "쓰기 완료!" }
+                withContext(Dispatchers.Main) {
+                    statusText?.text = "전송 완료! (화면에 정상 표시되는지 직접 확인해주세요)"
+                }
 
             } catch (e: TagLostException) {
-                // 연결이 끊긴 채로 방치된 IsoDep 세션을 정리합니다.
-                // (닫지 않고 두면 다음 태그 인식이 foreground dispatch로
-                //  안 잡히고 시스템 기본 팝업으로 새어나가는 경우가 있습니다)
                 try { isoDep.close() } catch (_: Exception) {}
-
-                val total = totalChunksOf(pendingImageData)
+                logDebug("!! TagLostException: 슬롯 $pendingSlotIndex, seq $pendingSeq")
                 withContext(Dispatchers.Main) {
-                    statusText?.text = "연결이 끊어졌습니다 ($pendingSeq / $total 전송됨)\n배지를 다시 대주세요"
-                    // 혹시 시스템이 dispatch를 놓쳤을 경우를 대비해 명시적으로 재등록
+                    statusText?.text = "연결이 끊어졌습니다 (슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS, 패킷 $pendingSeq)\n배지를 다시 대주세요"
                     nfcAdapter?.enableForegroundDispatch(this@MainActivity, pendingIntent, intentFilters, techLists)
                 }
                 waitingForTag = true
 
             } catch (e: Exception) {
                 try { isoDep.close() } catch (_: Exception) {}
-
+                logDebug("!! Exception: ${e.message}")
                 withContext(Dispatchers.Main) {
                     statusText?.text = "쓰기 실패: ${e.message}"
                     nfcAdapter?.enableForegroundDispatch(this@MainActivity, pendingIntent, intentFilters, techLists)
@@ -574,24 +605,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * D2(Load Image) 명령을 250바이트씩 나눠 순서대로 전송합니다.
-     *
-     * 지역 변수(seq, offset) 대신 클래스 필드(pendingSeq, pendingOffset)를
-     * 사용합니다. 이렇게 하면 도중에 TagLostException이 발생해도
-     * "어디까지 보냈는지"가 함수 밖에도 남아있어서, 다음 번 호출 때
-     * 그 지점부터 이어갈 수 있습니다.
-     *
-     * suspend 함수로 선언한 이유: 매 청크 전송 후 진행률 텍스트를
-     * 메인 스레드에서 갱신해야 하는데, 이건 코루틴 컨텍스트 안에서만 가능합니다.
+     * 하나의 슬롯(imageIndex) 안에서, 그 슬롯 데이터를 250바이트씩 D2로 전송합니다.
+     * pendingSeq/pendingSlotOffset은 "현재 슬롯 안에서의" 진행 상태입니다.
      */
-    private suspend fun sendLoadImageCommandsResumable(isoDep: IsoDep, data: ByteArray, imageIndex: Int) {
+    private suspend fun sendSlotResumable(isoDep: IsoDep, slotData: ByteArray, imageIndex: Int) {
         val chunkSize = 250
-        val totalChunks = totalChunksOf(data)
+        val totalChunksInSlot = (slotData.size + chunkSize - 1) / chunkSize
         val maxRetriesPerPacket = 3
 
-        while (pendingOffset < data.size) {
-            val end = minOf(pendingOffset + chunkSize, data.size)
-            val chunk = data.copyOfRange(pendingOffset, end)
+        while (pendingSlotOffset < slotData.size) {
+            val end = minOf(pendingSlotOffset + chunkSize, slotData.size)
+            val chunk = slotData.copyOfRange(pendingSlotOffset, end)
             val apdu = buildLoadImageApdu(imageIndex, pendingSeq, chunk)
 
             var attempt = 0
@@ -600,30 +624,25 @@ class MainActivity : AppCompatActivity() {
 
             while (attempt < maxRetriesPerPacket && !success) {
                 try {
-                    // 상태코드까지 검증하는 버전으로 교체
                     transceiveChecked(isoDep, apdu)
                     success = true
                 } catch (e: TagLostException) {
-                    // 물리적으로 태그가 떨어진 경우는 여기서 처리하지 않고
-                    // 바로 위(handleTagForWrite)의 catch로 넘겨서
-                    // "배지를 다시 대주세요" 흐름을 그대로 타게 합니다.
                     throw e
                 } catch (e: Exception) {
-                    // 순수 프로토콜 오류(잘못된 상태코드 등)는 같은 패킷을 재시도
                     lastError = e
                     attempt++
                 }
             }
 
             if (!success) {
-                throw lastError ?: Exception("알 수 없는 오류로 패킷 전송 실패 (seq=$pendingSeq)")
+                throw lastError ?: Exception("알 수 없는 오류로 패킷 전송 실패 (slot=$imageIndex, seq=$pendingSeq)")
             }
 
-            pendingOffset = end
+            pendingSlotOffset = end
             pendingSeq++
 
             withContext(Dispatchers.Main) {
-                statusText?.text = "전송 중... $pendingSeq / $totalChunks"
+                statusText?.text = "슬롯 ${imageIndex + 1}/$NUM_SLOTS - 전송 중... $pendingSeq / $totalChunksInSlot"
             }
         }
     }
