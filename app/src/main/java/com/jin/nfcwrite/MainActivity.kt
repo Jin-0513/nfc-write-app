@@ -505,13 +505,11 @@ class MainActivity : AppCompatActivity() {
                     pendingSlotOffset = 0
                 }
 
-                // 모든 슬롯 전송 완료. 화면 갱신은 아직 정확한 방식을 모르므로
-                // 일단 imageIndex=0으로 시도해봅니다 (추측, 틀릴 수 있음).
-                withContext(Dispatchers.Main) { statusText?.text = "화면 갱신 시도 중... (실험)" }
-                logDebug("=== 전송 완료, Redraw(imageIndex=0) 시도 ===")
+                // 모든 슬롯 전송 완료. 대기 모드 + 자동 재시도로 화면 갱신을 시도합니다.
+                logDebug("=== 전송 완료, Redraw(imageIndex=0, 대기모드+재시도) 시도 ===")
 
-                transceiveChecked(isoDep, buildRedrawApdu(0))
-                waitUntilNotBusy(isoDep)
+                redrawWithRetry(isoDep, imageIndex = 0, maxRetries = 5)
+
                 isoDep.close()
 
                 resetPendingWrite()
@@ -544,6 +542,45 @@ class MainActivity : AppCompatActivity() {
     private fun totalChunksOf(data: ByteArray?): Int {
         val size = data?.size ?: 0
         return (size + 249) / 250
+    }
+
+    /**
+     * D4(Redraw)를 대기 모드로 전송하고, 68CA(저전압) 등의 오류가 나면
+     * 짧은 대기 후 자동으로 재시도합니다. 순간적인 결합 흔들림에 기대는
+     * 방식이라 성공을 보장하진 않지만, 시도해볼 가치는 있습니다.
+     */
+    private suspend fun redrawWithRetry(isoDep: IsoDep, imageIndex: Int, maxRetries: Int = 5) {
+        var attempt = 0
+        var lastError: Exception? = null
+
+        while (attempt < maxRetries) {
+            try {
+                withContext(Dispatchers.Main) {
+                    statusText?.text = "화면 갱신 시도 ${attempt + 1}/$maxRetries (대기 모드)..."
+                }
+                logDebug("--- Redraw 시도 ${attempt + 1} (대기 모드) ---")
+
+                // 대기 모드이므로 칩이 실제 갱신을 마칠 때까지 여기서 블로킹됩니다.
+                // 그래서 별도의 waitUntilNotBusy() 폴링이 필요 없을 수도 있지만,
+                // 안전하게 한 번 더 확인합니다.
+                transceiveChecked(isoDep, buildRedrawApdu(imageIndex, waitMode = true))
+                logDebug("--- Redraw 성공 ---")
+                return // 성공하면 즉시 종료
+
+            } catch (e: TagLostException) {
+                // 태그가 물리적으로 떨어진 경우는 재시도해도 의미가 없으므로 위로 던짐
+                throw e
+            } catch (e: Exception) {
+                lastError = e
+                logDebug("--- Redraw 실패: ${e.message}, 재시도 대기 ---")
+                attempt++
+                if (attempt < maxRetries) {
+                    // 짧게 쉬었다가 재시도 (순간적인 결합 흔들림이 지나가길 기대)
+                    kotlinx.coroutines.delay(300)
+                }
+            }
+        }
+        throw lastError ?: Exception("Redraw 재시도 모두 실패")
     }
 
     /**
@@ -663,12 +700,18 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * D4(Redraw Screen) 명령의 APDU를 만듭니다.
-     * P1=0x05: 화면 전원 대기시간을 5*100ms=500ms로 설정 (문서 예시값)
-     * P2: 최상위 비트(0x80)를 세우면 "즉시 응답 모드", 나머지 7비트는 이미지 인덱스
+     * D4(Redraw Screen) APDU를 만듭니다.
+     *
+     * 실험: 즉시 응답 모드(bit7=1)에서 계속 68CA(저전압 알람)가 발생해서,
+     * 이번엔 대기 모드(bit7=0)로 시도합니다. 대기 모드는 칩이 화면 갱신을
+     * "실제로 끝낸 뒤" 응답하는 방식이라 순간 전력 요구 패턴이 다를 수 있습니다.
      */
-    private fun buildRedrawApdu(imageIndex: Int): ByteArray {
-        val p2 = (0x80 or (imageIndex and 0x7F)).toByte()
+    private fun buildRedrawApdu(imageIndex: Int, waitMode: Boolean = true): ByteArray {
+        val p2 = if (waitMode) {
+            (imageIndex and 0x7F).toByte()          // bit7=0: 대기 모드
+        } else {
+            (0x80 or (imageIndex and 0x7F)).toByte() // bit7=1: 즉시 응답 모드
+        }
         return byteArrayOf(0xF0.toByte(), 0xD4.toByte(), 0x05, p2, 0x00)
     }
 
