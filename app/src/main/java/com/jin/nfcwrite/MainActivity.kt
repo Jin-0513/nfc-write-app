@@ -564,9 +564,10 @@ class MainActivity : AppCompatActivity() {
                 // 그래서 별도의 waitUntilNotBusy() 폴링이 필요 없을 수도 있지만,
                 // 안전하게 한 번 더 확인합니다.
                 transceiveChecked(isoDep, buildRedrawApdu(imageIndex, waitMode = true))
-                logDebug("--- Redraw 성공 ---")
-                return // 성공하면 즉시 종료
-
+                logDebug("--- Redraw 명령 성공, Busy 상태 확인 시작 ---")
+                waitUntilNotBusy(isoDep)
+                logDebug("--- 화면 갱신 완료 확인 ---")
+                return
             } catch (e: TagLostException) {
                 // 태그가 물리적으로 떨어진 경우는 재시도해도 의미가 없으므로 위로 던짐
                 throw e
@@ -619,12 +620,13 @@ class MainActivity : AppCompatActivity() {
         val w = bitmap.width
         val h = bitmap.height
 
-        // 모든 픽셀을 순서대로(왼쪽→오른쪽, 위→아래) 4비트 코드로 변환해 리스트에 담음
+        // 실측 결과: 위/아래가 뒤집혀서 표시됨 (원본 맨 위 줄이 배지 맨 아래에 나옴).
+        // 따라서 세로 순서를 반대로(아래 줄부터) 전송해서 보정합니다.
         val codes = ArrayList<Int>(w * h)
-        for (y in 0 until h) {
+        for (y in h - 1 downTo 0) {
             for (x in 0 until w) {
                 val matched = ColorPalette.nearestColor(bitmap.getPixel(x, y))
-                codes.add(matched.code) // 0~6 사이의 값 (4비트로 표현 가능)
+                codes.add(matched.code)
             }
         }
 
@@ -725,20 +727,33 @@ class MainActivity : AppCompatActivity() {
 
     /**
      * 화면 갱신이 끝날 때까지 DE 명령을 반복 전송하며 기다립니다.
-     * (즉시 응답 모드를 썼기 때문에, D4 명령 자체는 바로 끝나지만
-     *  실제 e-ink 화면이 다 바뀔 때까지는 별도로 확인해야 합니다)
+     * 제조사 레퍼런스 코드(demo.c) 기준으로 맞춤: 500ms 간격, 최대 120회(최대 60초).
+     * 기존 200ms/50회(10초)보다 훨씬 여유롭게 기다립니다.
      */
-    private fun waitUntilNotBusy(isoDep: IsoDep) {
+    private suspend fun waitUntilNotBusy(isoDep: IsoDep) {
         var busy = true
         var attempts = 0
-        while (busy && attempts < 50) {
-            val resp = transceiveChecked(isoDep, buildBusyStatusApdu())
-            if (resp.isNotEmpty() && resp[0] == 0x00.toByte()) {
-                busy = false
-            } else {
-                Thread.sleep(200)
+        var errorCount = 0
+
+        while (busy && attempts < 120) {
+            kotlinx.coroutines.delay(500) // 레퍼런스 코드와 동일하게 먼저 500ms 대기
+
+            try {
+                val resp = transceiveChecked(isoDep, buildBusyStatusApdu())
+                if (resp.isNotEmpty() && resp[0] == 0x00.toByte()) {
+                    busy = false
+                }
+                errorCount = 0
+            } catch (e: Exception) {
+                // 레퍼런스 코드처럼 통신 오류가 5번 연속되면 포기
+                errorCount++
+                if (errorCount > 5) throw e
             }
+
             attempts++
+            withContext(Dispatchers.Main) {
+                statusText?.text = "화면 갱신 대기 중... (${attempts * 500 / 1000}초 경과)"
+            }
         }
     }
 }
