@@ -508,7 +508,7 @@ class MainActivity : AppCompatActivity() {
                 // 모든 슬롯 전송 완료. 대기 모드 + 자동 재시도로 화면 갱신을 시도합니다.
                 logDebug("=== 전송 완료, Redraw(imageIndex=0, 대기모드+재시도) 시도 ===")
 
-                redrawWithRetry(isoDep, imageIndex = 0, maxRetries = 5)
+                redrawWithRetry(isoDep, imageIndex = 0, maxRetries = 1)
 
                 isoDep.close()
 
