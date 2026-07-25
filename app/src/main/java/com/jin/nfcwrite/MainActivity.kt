@@ -560,10 +560,10 @@ class MainActivity : AppCompatActivity() {
                 }
                 logDebug("--- Redraw 시도 ${attempt + 1} (대기 모드) ---")
 
-                // 대기 모드이므로 칩이 실제 갱신을 마칠 때까지 여기서 블로킹됩니다.
-                // 그래서 별도의 waitUntilNotBusy() 폴링이 필요 없을 수도 있지만,
-                // 안전하게 한 번 더 확인합니다.
-                transceiveChecked(isoDep, buildRedrawApdu(imageIndex, waitMode = true))
+                // 대기 모드(waitMode=true)에서 문제가 발생하여, 200x300에서 검증된
+                // 즉시 응답 모드(waitMode=false)로 되돌립니다. 재시도 로직과
+                // DE 폴링 시간 연장은 그대로 유지합니다.
+                transceiveChecked(isoDep, buildRedrawApdu(imageIndex, waitMode = false))
                 logDebug("--- Redraw 명령 성공, Busy 상태 확인 시작 ---")
                 waitUntilNotBusy(isoDep)
                 logDebug("--- 화면 갱신 완료 확인 ---")
