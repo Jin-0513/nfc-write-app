@@ -1,15 +1,11 @@
 package com.jin.nfcwrite
 
-import android.app.PendingIntent
-import android.content.Intent
-import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.IsoDep
-import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.ViewGroup
@@ -47,7 +43,7 @@ import android.graphics.Color
  * 2. showEditorScreen()  - 변환된 이미지 미리보기 + 줌 + 알고리즘 선택
  * 3. showWriteScreen()   - NFC 태그 대기 화면 (배지에 실제로 씀)
  */
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
     // ===== 배지 관련 설정값 =====
     private var targetWidth = 400
@@ -57,17 +53,16 @@ class MainActivity : AppCompatActivity() {
     // NfcAdapter: 이 폰의 NFC 하드웨어를 제어하는 객체 (폰 전체에 하나만 존재)
     private var nfcAdapter: NfcAdapter? = null
 
-    // PendingIntent: "나중에 실행될 예정인 인텐트(작업 예약표)"라고 생각하면 됩니다.
-    // NFC 태그가 감지되면 안드로이드 시스템이 이 PendingIntent를 실행시켜서
-    // 우리 앱의 onNewIntent()가 호출되게 만듭니다.
-    private lateinit var pendingIntent: PendingIntent
-
-    // 어떤 종류의 NFC 이벤트에 반응할지 정의하는 필터
-    private lateinit var intentFilters: Array<IntentFilter>
-
-    // 어떤 NFC 기술(통신 방식)을 지원할지 지정
-    // IsoDep = ISO 14443-4 방식 (스마트카드 APDU 통신, 이 배지가 쓰는 방식)
-    private lateinit var techLists: Array<Array<String>>
+    // reader mode용 플래그: IsoDep(=NFC-A 기반 스마트카드) 기술만 폴링하고,
+    // 카드에뮬레이션/P2P 등 다른 NFC 기술 탐색은 꺼서 필드를 더 안정적으로 유지합니다.
+    // 기존 enableForegroundDispatch() 방식은 백그라운드에서 다른 기술도 계속
+    // 폴링하느라 필드를 주기적으로 껐다 켜는데, 이게 수동형(배터리 없는) 배지에는
+    // 긴 트랜잭션(20초 이상) 도중 전력 순간 끊김으로 작용할 수 있어서 교체합니다.
+    private val readerModeFlags =
+        NfcAdapter.FLAG_READER_NFC_A or
+        NfcAdapter.FLAG_READER_NFC_B or
+        NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK or
+        NfcAdapter.FLAG_READER_NO_PLATFORM_SOUNDS
 
     // ===== 화면 구성용 =====
     // 모든 화면(선택/편집/쓰기)이 이 컨테이너 하나에 번갈아 그려집니다.
@@ -148,25 +143,6 @@ class MainActivity : AppCompatActivity() {
         // 이 기기의 NFC 어댑터를 가져옴 (NFC 미지원 기기면 null이 반환됨)
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
 
-        // Android 12(S) 이상에서는 PendingIntent에 MUTABLE/IMMUTABLE 플래그를
-        // 명시적으로 지정해야 합니다. NFC는 태그 정보를 인텐트에 담아 전달해야 하므로
-        // MUTABLE(수정 가능)이 필요합니다.
-        val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
-
-        pendingIntent = PendingIntent.getActivity(
-            this, 0,
-            // FLAG_ACTIVITY_SINGLE_TOP: 이미 이 액티비티가 화면 맨 위에 떠 있으면
-            // 새로 액티비티를 만들지 않고 기존 것의 onNewIntent()만 호출하게 함
-            Intent(this, javaClass).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-            flags
-        )
-
-        // "태그가 감지되면" 이라는 이벤트에 반응하겠다는 필터
-        intentFilters = arrayOf(IntentFilter(NfcAdapter.ACTION_TAG_DISCOVERED))
-
-        // IsoDep 기술(스마트카드 통신)을 지원하는 태그만 받겠다고 지정
-        techLists = arrayOf(arrayOf(IsoDep::class.java.name))
-
         // 앱이 시작되면 가장 먼저 이미지 선택 화면을 보여줌
         showPickerScreen()
     }
@@ -175,45 +151,43 @@ class MainActivity : AppCompatActivity() {
      * 이 액티비티가 화면 맨 앞으로 나올 때마다 호출됩니다.
      * (앱을 처음 열 때, 다른 앱에서 돌아올 때 등)
      *
-     * 여기서 "지금이 NFC 쓰기를 기다리는 상태인지" 확인해서,
-     * 맞다면 foreground dispatch(이 앱이 NFC 태그를 독점하는 모드)를 켭니다.
-     * 이게 바로 그 "작업을 수행할 때 사용하는 앱" 팝업을 막아주는 핵심 로직입니다.
+     * reader mode를 켭니다. foreground dispatch와 달리 인텐트를 거치지 않고
+     * onTagDiscovered() 콜백이 바로 호출되며, 다른 NFC 기술 탐색을 위한
+     * 백그라운드 폴링도 꺼지기 때문에 "작업을 수행할 때 사용하는 앱" 팝업도
+     * 계속 막히고, 긴 트랜잭션 도중 필드가 더 안정적으로 유지됩니다.
      */
     override fun onResume() {
         super.onResume()
-        // waitingForTag 조건을 없애고, 앱이 화면에 떠 있는 동안은
-        // 항상 이 앱이 NFC 태그를 독점하도록 설정합니다.
-        // (이래야 어느 화면에 있든 "앱 선택" 팝업이 뜨지 않습니다)
-        nfcAdapter?.enableForegroundDispatch(this, pendingIntent, intentFilters, techLists)
+        // extras에 PRESENCE_CHECK_DELAY를 늘려서, 시스템이 태그 생존 여부를
+        // 확인하려고 끼어드는 간격도 넓혀줍니다 (기본값은 더 짧음).
+        val extras = Bundle().apply {
+            putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 3000)
+        }
+        nfcAdapter?.enableReaderMode(this, this, readerModeFlags, extras)
     }
     
     /**
      * 이 액티비티가 화면에서 사라질 때(다른 앱으로 전환, 홈 버튼 등) 호출됩니다.
-     * foreground dispatch를 반드시 꺼줘야, 이 앱이 꺼진 뒤에는 다른 앱들
+     * reader mode를 반드시 꺼줘야, 이 앱이 꺼진 뒤에는 다른 앱들
      * (SB톡톡+ 등)이 다시 정상적으로 NFC를 쓸 수 있습니다.
      */
     override fun onPause() {
         super.onPause()
-        nfcAdapter?.disableForegroundDispatch(this)
+        nfcAdapter?.disableReaderMode(this)
     }
 
     /**
-     * foreground dispatch가 켜진 상태에서 NFC 태그가 감지되면 호출되는 함수.
-     * (onCreate가 아니라 이 함수가 불린다는 게 핵심 - 앱이 이미 켜져 있는
-     *  상태에서 "새로운 이벤트만" 여기로 전달됩니다)
+     * reader mode가 켜진 상태에서 NFC 태그가 감지되면 호출되는 콜백.
+     * 주의: 이 콜백은 메인(UI) 스레드가 아니라 별도의 바이너 스레드에서
+     * 호출됩니다. handleTagForWrite()는 내부적으로 코루틴을 새로 띄우고
+     * UI 갱신은 Dispatchers.Main으로 전환해서 처리하므로 그대로 안전합니다.
      */
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        // dispatch는 항상 켜져 있지만, 실제로 "쓰기 실행"은
-        // waitingForTag가 true일 때(=쓰기 대기 화면)만 하도록 여기서 걸러줍니다.
+    override fun onTagDiscovered(tag: Tag) {
+        // waitingForTag가 true일 때(=쓰기 대기 화면)만 실제로 처리합니다.
         // 즉, 이미지 선택/편집 화면에서 실수로 배지를 대면
         // 태그는 이 앱이 받되(팝업은 안 뜸), 아무 동작도 하지 않고 무시됩니다.
         if (!waitingForTag) return
-        val tag: Tag? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
-            intent.getParcelableExtra(NfcAdapter.EXTRA_TAG, Tag::class.java)
-        else
-            @Suppress("DEPRECATION") intent.getParcelableExtra(NfcAdapter.EXTRA_TAG)
-        tag?.let { handleTagForWrite(it) }
+        handleTagForWrite(tag)
     }
 
     // ============================================================
@@ -626,7 +600,6 @@ class MainActivity : AppCompatActivity() {
                 logDebug("!! TagLostException: 슬롯 $pendingSlotIndex, seq $pendingSeq")
                 withContext(Dispatchers.Main) {
                     statusText?.text = "연결이 끊어졌습니다 (슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS, 패킷 $pendingSeq)\n배지를 다시 대주세요"
-                    nfcAdapter?.enableForegroundDispatch(this@MainActivity, pendingIntent, intentFilters, techLists)
                 }
                 waitingForTag = true
 
@@ -635,7 +608,6 @@ class MainActivity : AppCompatActivity() {
                 logDebug("!! Exception: ${e.message}")
                 withContext(Dispatchers.Main) {
                     statusText?.text = "쓰기 실패: ${e.message}"
-                    nfcAdapter?.enableForegroundDispatch(this@MainActivity, pendingIntent, intentFilters, techLists)
                 }
                 waitingForTag = true
             }
