@@ -19,6 +19,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 import android.nfc.TagLostException
 import android.content.ClipData
 import android.content.ClipboardManager
@@ -188,12 +191,46 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
      * 호출됩니다. handleTagForWrite()는 내부적으로 코루틴을 새로 띄우고
      * UI 갱신은 Dispatchers.Main으로 전환해서 처리하므로 그대로 안전합니다.
      */
+    // D2 전송(20초 이상) 후 close()+connect() 재사용으로는 진짜 통신이 복구되지 않는
+    // 것으로 확인되어, reader mode를 껐다 켜서 완전히 새 Tag 객체를 다시 받아오는
+    // 방식을 씁니다. 이 변수가 "지금 그 새 Tag를 기다리는 중"임을 나타냅니다.
+    private var pendingTagReconnect: CompletableDeferred<Tag>? = null
+
     override fun onTagDiscovered(tag: Tag) {
+        // 재폴링을 기다리는 중이면(=D2 전송 다 끝나고 Redraw 전 새 Tag를 기다리는 상황)
+        // 일반적인 쓰기 시작 로직 대신 그 대기를 완료시켜줍니다.
+        val reconnectWaiter = pendingTagReconnect
+        if (reconnectWaiter != null && !reconnectWaiter.isCompleted) {
+            reconnectWaiter.complete(tag)
+            return
+        }
         // waitingForTag가 true일 때(=쓰기 대기 화면)만 실제로 처리합니다.
         // 즉, 이미지 선택/편집 화면에서 실수로 배지를 대면
         // 태그는 이 앱이 받되(팝업은 안 뜸), 아무 동작도 하지 않고 무시됩니다.
         if (!waitingForTag) return
         handleTagForWrite(tag)
+    }
+
+    /**
+     * reader mode를 껐다 켜서 안드로이드가 배지를 처음부터 다시 폴링하게 만들고,
+     * 그 결과로 새로 감지되는 Tag를 받아옵니다. 배지가 그 자리에 그대로 있으면
+     * 보통 수백 ms 안에 다시 감지됩니다.
+     */
+    private suspend fun reacquireTag(timeoutMs: Long = 5000): Tag {
+        val deferred = CompletableDeferred<Tag>()
+        pendingTagReconnect = deferred
+        try {
+            withContext(Dispatchers.Main) {
+                nfcAdapter?.disableReaderMode(this@MainActivity)
+                val extras = Bundle().apply {
+                    putInt(NfcAdapter.EXTRA_READER_PRESENCE_CHECK_DELAY, 3000)
+                }
+                nfcAdapter?.enableReaderMode(this@MainActivity, this@MainActivity, readerModeFlags, extras)
+            }
+            return withTimeout(timeoutMs) { deferred.await() }
+        } finally {
+            pendingTagReconnect = null
+        }
     }
 
     // ============================================================
@@ -623,21 +660,32 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                     }
                 }
 
-                // 모든 슬롯 전송 완료. D4/DE 단계는 이전에 항상 여기서 세션이 끊겼던
-                // 구간이라, 시간 여부와 상관없이 한 번 더 강제로 리프레시하고 들어갑니다.
-                logDebug("--- Redraw 진입 전 강제 리프레시 (연결 후 경과 ${elapsedSec()}초) ---")
-                isoDep.close()
-                isoDep.connect()
+                // 모든 슬롯 전송 완료. close()+connect() 재사용 방식은 실측 결과
+                // "성공" 응답은 오지만 실제 통신은 복구가 안 되는 것으로 확인됨.
+                // -> 기존 세션은 버리고, reader mode를 껐다 켜서 완전히 새로운
+                //    Tag/IsoDep을 다시 받아옵니다. 배지는 그대로 두면 됩니다.
+                logDebug("--- Redraw 진입 전 재폴링으로 새 Tag 획득 시도 (연결 후 경과 ${elapsedSec()}초) ---")
+                try { isoDep.close() } catch (_: Exception) {}
+
+                val newTag = try {
+                    reacquireTag()
+                } catch (e: TimeoutCancellationException) {
+                    logDebug("!! 재폴링 타임아웃(5초 내 재감지 안 됨): 배지가 그대로 있는지 확인 필요")
+                    throw TagLostException("재폴링 타임아웃")
+                }
+                val newIsoDep = IsoDep.get(newTag)
+                    ?: throw TagLostException("재폴링된 태그가 IsoDep을 지원하지 않음")
+                newIsoDep.connect()
+                newIsoDep.timeout = 5000
                 kotlinx.coroutines.delay(300) // RF 리셋 직후 안정화 대기
-                lastRefreshMs = System.currentTimeMillis()
-                logDebug("--- 리프레시 성공, Redraw 시도 ---")
+                logDebug("--- 새 Tag/IsoDep 획득 성공, Redraw 시도 ---")
 
                 // 대기 모드 + 자동 재시도로 화면 갱신을 시도합니다.
                 logDebug("=== Redraw(imageIndex=0, 대기모드+재시도) 시도 ===")
 
-                redrawWithRetry(isoDep, imageIndex = 0, maxRetries = 1)
+                redrawWithRetry(newIsoDep, imageIndex = 0, maxRetries = 1)
 
-                isoDep.close()
+                try { newIsoDep.close() } catch (_: Exception) {}
 
                 resetPendingWrite()
                 consecutiveTagLostCount = 0
