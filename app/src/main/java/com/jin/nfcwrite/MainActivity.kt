@@ -87,6 +87,11 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     
     private var waitingForTag = false // 지금 NFC 태그를 기다리는 중인지 여부
 
+    // 배지를 뗐다 붙이지 않아도 reader mode가 같은 태그를 계속 재감지해서
+    // TagLostException이 나면 자동으로 무한 재시도하게 되는데, 이걸 막기 위한 카운터
+    private var consecutiveTagLostCount = 0
+    private val MAX_AUTO_RETRIES = 3
+
     // ===== 쓰기 이어하기(resume) + 슬롯 분할 실험용 상태 =====
     // 실측 결과: D2(Load Image) 한 세션은 정확히 30,000바이트에서 SW=6A86으로 거부됨.
     // 120,000바이트 전체 이미지를 30,000바이트씩 4개의 imageIndex(슬롯)로 나눠
@@ -105,6 +110,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         pendingSlotIndex = 0
         pendingSeq = 0
         pendingSlotOffset = 0
+        consecutiveTagLostCount = 0
     }
 
     /**
@@ -366,12 +372,21 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 showEditorScreen()
             }
         }
+        val retryButton = Button(this).apply {
+            text = "다시 시도"
+            setOnClickListener {
+                consecutiveTagLostCount = 0
+                statusText?.text = "배지를 폰 뒷면에 대주세요"
+                waitingForTag = true
+            }
+        }
         val logButton = Button(this).apply {
             text = "로그 보기"
             setOnClickListener { showLogScreen() }
         }
         layout.addView(statusText)
         layout.addView(cancelButton)
+        layout.addView(retryButton)
         layout.addView(logButton)
         rootContainer.addView(layout, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
@@ -540,6 +555,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             try {
                 isoDep.connect()
                 isoDep.timeout = 5000
+                kotlinx.coroutines.delay(300) // RF 리셋 직후 배지(수동형)가 안정화될 시간을 줌
                 val connectStartMs = System.currentTimeMillis()
                 fun elapsedSec() = "%.1f".format((System.currentTimeMillis() - connectStartMs) / 1000.0)
 
@@ -551,12 +567,13 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 val REFRESH_INTERVAL_MS = 10_000L
                 var lastRefreshMs = System.currentTimeMillis()
 
-                fun refreshConnectionIfDue(reason: String) {
+                suspend fun refreshConnectionIfDue(reason: String) {
                     val sinceRefresh = System.currentTimeMillis() - lastRefreshMs
                     if (sinceRefresh < REFRESH_INTERVAL_MS) return
                     logDebug("--- 세션 리프레시 시도 ($reason, 마지막 리프레시 후 ${sinceRefresh / 1000.0}초, 연결 후 경과 ${elapsedSec()}초) ---")
                     isoDep.close()
                     isoDep.connect()
+                    kotlinx.coroutines.delay(300) // RF 리셋 직후 안정화 대기
                     lastRefreshMs = System.currentTimeMillis()
                     logDebug("--- 세션 리프레시 성공 (재연결 완료) ---")
                 }
@@ -611,6 +628,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 logDebug("--- Redraw 진입 전 강제 리프레시 (연결 후 경과 ${elapsedSec()}초) ---")
                 isoDep.close()
                 isoDep.connect()
+                kotlinx.coroutines.delay(300) // RF 리셋 직후 안정화 대기
                 lastRefreshMs = System.currentTimeMillis()
                 logDebug("--- 리프레시 성공, Redraw 시도 ---")
 
@@ -622,17 +640,30 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 isoDep.close()
 
                 resetPendingWrite()
+                consecutiveTagLostCount = 0
                 withContext(Dispatchers.Main) {
                     statusText?.text = "전송 완료! (화면에 정상 표시되는지 직접 확인해주세요)"
                 }
 
             } catch (e: TagLostException) {
                 try { isoDep.close() } catch (_: Exception) {}
-                logDebug("!! TagLostException: 슬롯 $pendingSlotIndex, seq $pendingSeq")
-                withContext(Dispatchers.Main) {
-                    statusText?.text = "연결이 끊어졌습니다 (슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS, 패킷 $pendingSeq)\n배지를 다시 대주세요"
+                consecutiveTagLostCount++
+                logDebug("!! TagLostException: 슬롯 $pendingSlotIndex, seq $pendingSeq (연속 ${consecutiveTagLostCount}회째)")
+
+                if (consecutiveTagLostCount >= MAX_AUTO_RETRIES) {
+                    // 배지를 뗐다 붙이지 않았는데도 reader mode가 같은 태그를 계속
+                    // 재감지해서 자동으로 계속 재시도되는 걸 막기 위해 여기서 멈춥니다.
+                    // waitingForTag를 false로 유지해서 다음 태그 감지를 무시하고,
+                    // 사용자가 "다시 시도" 버튼을 눌러야만 재개되게 합니다.
+                    withContext(Dispatchers.Main) {
+                        statusText?.text = "연결이 계속 끊어집니다 (${consecutiveTagLostCount}회 연속 실패, 슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS)\n배지를 완전히 뗐다가 다시 대거나, '다시 시도' 버튼을 눌러주세요"
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        statusText?.text = "연결이 끊어졌습니다 (슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS, 패킷 $pendingSeq)\n자동으로 다시 시도합니다..."
+                    }
+                    waitingForTag = true
                 }
-                waitingForTag = true
 
             } catch (e: Exception) {
                 try { isoDep.close() } catch (_: Exception) {}
