@@ -98,7 +98,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     // 배지를 뗐다 붙이지 않아도 reader mode가 같은 태그를 계속 재감지해서
     // TagLostException이 나면 자동으로 무한 재시도하게 되는데, 이걸 막기 위한 카운터
     private var consecutiveTagLostCount = 0
-    private val MAX_AUTO_RETRIES = 3
+    private val MAX_AUTO_RETRIES = 30 // 제조사 앱도 "수십 번" 재시도 끝에 성공하는 경우가 있었다는 걸 참고
 
     // ===== 쓰기 이어하기(resume) + 슬롯 분할 실험용 상태 =====
     // 실측 결과: D2(Load Image) 한 세션은 정확히 30,000바이트에서 SW=6A86으로 거부됨.
@@ -814,19 +814,20 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 try { isoDep.close() } catch (_: Exception) {}
                 consecutiveTagLostCount++
                 logDebug("!! TagLostException: 슬롯 $pendingSlotIndex, seq $pendingSeq (연속 ${consecutiveTagLostCount}회째)")
-                playErrorSound() // 배지가 떨어졌거나 연결이 끊어짐
 
                 if (consecutiveTagLostCount >= MAX_AUTO_RETRIES) {
                     // 배지를 뗐다 붙이지 않았는데도 reader mode가 같은 태그를 계속
                     // 재감지해서 자동으로 계속 재시도되는 걸 막기 위해 여기서 멈춥니다.
                     // waitingForTag를 false로 유지해서 다음 태그 감지를 무시하고,
                     // 사용자가 "다시 시도" 버튼을 눌러야만 재개되게 합니다.
+                    // 재시도 도중에는 조용히 있다가, 완전히 포기할 때만 경고음 1번 재생
+                    playErrorSound()
                     withContext(Dispatchers.Main) {
                         statusText?.text = "연결이 계속 끊어집니다 (${consecutiveTagLostCount}회 연속 실패, 슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS)\n배지를 완전히 뗐다가 다시 대거나, '다시 시도' 버튼을 눌러주세요"
                     }
                 } else {
                     withContext(Dispatchers.Main) {
-                        statusText?.text = "연결이 끊어졌습니다 (슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS, 패킷 $pendingSeq)\n자동으로 다시 시도합니다..."
+                        statusText?.text = "연결이 끊어졌습니다 (슬롯 ${pendingSlotIndex + 1}/$NUM_SLOTS, 패킷 $pendingSeq)\n자동으로 다시 시도합니다... (${consecutiveTagLostCount}/$MAX_AUTO_RETRIES)"
                     }
                     waitingForTag = true
                 }
