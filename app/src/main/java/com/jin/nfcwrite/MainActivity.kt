@@ -543,6 +543,24 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 val connectStartMs = System.currentTimeMillis()
                 fun elapsedSec() = "%.1f".format((System.currentTimeMillis() - connectStartMs) / 1000.0)
 
+                // 실측 결과 D2 전송 480패킷(4슬롯)이 약 23~24초 걸리는데, 그 직후
+                // Busy 확인(DE) 첫 시도에서 매번 "Tag was lost"가 발생함. 즉 안드로이드/
+                // NFC 컨트롤러 쪽에 대략 20초대의 하드 타임아웃이 있는 것으로 추정됨.
+                // -> 배지는 물리적으로 그대로 둔 채, 일정 시간마다 소프트웨어적으로만
+                //    close()+connect()를 다시 해서 그 타이머를 리셋해봅니다.
+                val REFRESH_INTERVAL_MS = 10_000L
+                var lastRefreshMs = System.currentTimeMillis()
+
+                fun refreshConnectionIfDue(reason: String) {
+                    val sinceRefresh = System.currentTimeMillis() - lastRefreshMs
+                    if (sinceRefresh < REFRESH_INTERVAL_MS) return
+                    logDebug("--- 세션 리프레시 시도 ($reason, 마지막 리프레시 후 ${sinceRefresh / 1000.0}초, 연결 후 경과 ${elapsedSec()}초) ---")
+                    isoDep.close()
+                    isoDep.connect()
+                    lastRefreshMs = System.currentTimeMillis()
+                    logDebug("--- 세션 리프레시 성공 (재연결 완료) ---")
+                }
+
                 // 제조사 확인(2026-07-20): 이 제품은 기본 PIN이 없음 = PIN 인증 불필요
 
                 if (pendingImageData == null) {
@@ -581,10 +599,23 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                     pendingSlotIndex++
                     pendingSeq = 0
                     pendingSlotOffset = 0
+
+                    // 슬롯이 끝날 때마다 리프레시가 필요한 시점인지 체크 (다음 슬롯 시작 전에)
+                    if (pendingSlotIndex < NUM_SLOTS) {
+                        refreshConnectionIfDue("슬롯 $pendingSlotIndex 시작 전")
+                    }
                 }
 
-                // 모든 슬롯 전송 완료. 대기 모드 + 자동 재시도로 화면 갱신을 시도합니다.
-                logDebug("=== 전송 완료, 연결 후 경과 ${elapsedSec()}초, Redraw(imageIndex=0, 대기모드+재시도) 시도 ===")
+                // 모든 슬롯 전송 완료. D4/DE 단계는 이전에 항상 여기서 세션이 끊겼던
+                // 구간이라, 시간 여부와 상관없이 한 번 더 강제로 리프레시하고 들어갑니다.
+                logDebug("--- Redraw 진입 전 강제 리프레시 (연결 후 경과 ${elapsedSec()}초) ---")
+                isoDep.close()
+                isoDep.connect()
+                lastRefreshMs = System.currentTimeMillis()
+                logDebug("--- 리프레시 성공, Redraw 시도 ---")
+
+                // 대기 모드 + 자동 재시도로 화면 갱신을 시도합니다.
+                logDebug("=== Redraw(imageIndex=0, 대기모드+재시도) 시도 ===")
 
                 redrawWithRetry(isoDep, imageIndex = 0, maxRetries = 1)
 
