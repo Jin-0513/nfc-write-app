@@ -620,11 +620,13 @@ class MainActivity : AppCompatActivity() {
         val w = bitmap.width
         val h = bitmap.height
 
-        // 실측 결과: 위/아래가 뒤집혀서 표시됨 (원본 맨 위 줄이 배지 맨 아래에 나옴).
-        // 따라서 세로 순서를 반대로(아래 줄부터) 전송해서 보정합니다.
+        // 실측 결과: 위/아래, 좌/우가 모두 뒤집혀서 표시됨
+        // (원본 맨 위 줄이 배지 맨 아래에, 원본 왼쪽이 배지 오른쪽에 나옴).
+        // 즉 배지가 원본을 180도 회전시켜 그리는 셈이므로,
+        // 세로 순서(아래 줄부터)와 가로 순서(오른쪽 픽셀부터)를 모두 반대로 전송해서 보정합니다.
         val codes = ArrayList<Int>(w * h)
         for (y in h - 1 downTo 0) {
-            for (x in 0 until w) {
+            for (x in w - 1 downTo 0) {
                 val matched = ColorPalette.nearestColor(bitmap.getPixel(x, y))
                 codes.add(matched.code)
             }
