@@ -566,6 +566,8 @@ class MainActivity : AppCompatActivity() {
             try {
                 isoDep.connect()
                 isoDep.timeout = 5000
+                val connectStartMs = System.currentTimeMillis()
+                fun elapsedSec() = "%.1f".format((System.currentTimeMillis() - connectStartMs) / 1000.0)
 
                 // 제조사 확인(2026-07-20): 이 제품은 기본 PIN이 없음 = PIN 인증 불필요
 
@@ -601,14 +603,14 @@ class MainActivity : AppCompatActivity() {
 
                     sendSlotResumable(isoDep, slotData, pendingSlotIndex)
 
-                    logDebug("--- 슬롯 $pendingSlotIndex 완료 ---")
+                    logDebug("--- 슬롯 $pendingSlotIndex 완료, 연결 후 경과 ${elapsedSec()}초 ---")
                     pendingSlotIndex++
                     pendingSeq = 0
                     pendingSlotOffset = 0
                 }
 
                 // 모든 슬롯 전송 완료. 대기 모드 + 자동 재시도로 화면 갱신을 시도합니다.
-                logDebug("=== 전송 완료, Redraw(imageIndex=0, 대기모드+재시도) 시도 ===")
+                logDebug("=== 전송 완료, 연결 후 경과 ${elapsedSec()}초, Redraw(imageIndex=0, 대기모드+재시도) 시도 ===")
 
                 redrawWithRetry(isoDep, imageIndex = 0, maxRetries = 1)
 
@@ -838,19 +840,26 @@ class MainActivity : AppCompatActivity() {
         var busy = true
         var attempts = 0
         var errorCount = 0
+        val startedAt = System.currentTimeMillis()
+
+        logDebug("--- Busy 폴링 시작 (500ms 간격, 최대 120회) ---")
 
         while (busy && attempts < 120) {
             kotlinx.coroutines.delay(500) // 레퍼런스 코드와 동일하게 먼저 500ms 대기
+
+            val elapsedSec = (System.currentTimeMillis() - startedAt) / 1000.0
 
             try {
                 val resp = transceiveChecked(isoDep, buildBusyStatusApdu())
                 if (resp.isNotEmpty() && resp[0] == 0x00.toByte()) {
                     busy = false
+                    logDebug("--- Busy 폴링 ${attempts + 1}번째: 완료(00) 확인, 경과 ${"%.1f".format(elapsedSec)}초 ---")
                 }
                 errorCount = 0
             } catch (e: Exception) {
                 // 레퍼런스 코드처럼 통신 오류가 5번 연속되면 포기
                 errorCount++
+                logDebug("--- Busy 폴링 ${attempts + 1}번째 실패(연속 ${errorCount}회), 경과 ${"%.1f".format(elapsedSec)}초: ${e.message} ---")
                 if (errorCount > 5) throw e
             }
 
