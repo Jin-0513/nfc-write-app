@@ -75,6 +75,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     private var originalBitmap: Bitmap? = null   // 갤러리에서 방금 불러온 원본 이미지
     private var processedBitmap: Bitmap? = null  // 6색 변환이 끝난 결과 이미지
     private var currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG // 기본 알고리즘
+    private var currentSmudgeLevel = ImageProcessor.SmudgeLevel.NONE // 기본: 뭉개기 없음(기존 로직)
 
     private var zoomImageView: ZoomableImageView? = null  // 편집 화면의 이미지 뷰 (줌 가능)
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
@@ -320,7 +321,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         // Dispatchers.Default: CPU 연산이 많은 작업(이미지 픽셀 처리)에
         // 적합한 스레드 풀. IO와는 성격이 달라서 구분해서 씁니다.
         CoroutineScope(Dispatchers.Default).launch {
-            val result = ImageProcessor.process(src, targetWidth, targetHeight, currentAlgorithm)
+            val result = ImageProcessor.process(src, targetWidth, targetHeight, currentAlgorithm, currentSmudgeLevel)
             withContext(Dispatchers.Main) {
                 processedBitmap = result
                 showEditorScreen()
@@ -401,6 +402,47 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         sizeRow.addView(size400Button)
         sizeRow.addView(size200Button)
         root.addView(sizeRow)
+
+        // --- 뭉개기(스머지) 강도 선택 버튼 줄 ---
+        // 색이 촘촘하게 바뀌는 디더링 노이즈가 화면 갱신 실패의 원인으로 보여서,
+        // 양자화 전에 이미지를 블러 처리해 색 전환 수를 줄이는 우회책입니다.
+        val smudgeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(20, 0, 20, 20)
+        }
+        val smudgeLabel = TextView(this).apply {
+            text = "뭉개기:"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 10, 0)
+        }
+        val smudgeNoneButton = Button(this).apply {
+            text = "1.그대로"
+            setOnClickListener {
+                currentSmudgeLevel = ImageProcessor.SmudgeLevel.NONE
+                applyAlgorithmAndShowEditor()
+            }
+        }
+        val smudgeMediumButton = Button(this).apply {
+            text = "2.살짝"
+            setOnClickListener {
+                currentSmudgeLevel = ImageProcessor.SmudgeLevel.MEDIUM
+                applyAlgorithmAndShowEditor()
+            }
+        }
+        val smudgeHeavyButton = Button(this).apply {
+            text = "3.많이"
+            setOnClickListener {
+                currentSmudgeLevel = ImageProcessor.SmudgeLevel.HEAVY
+                applyAlgorithmAndShowEditor()
+            }
+        }
+        smudgeRow.addView(smudgeLabel)
+        smudgeRow.addView(smudgeNoneButton)
+        smudgeRow.addView(smudgeMediumButton)
+        smudgeRow.addView(smudgeHeavyButton)
+        root.addView(smudgeRow)
 
         // --- 하단 액션 버튼 줄 ---
         val actionRow = LinearLayout(this).apply {

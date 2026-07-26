@@ -19,23 +19,91 @@ object ImageProcessor {
     enum class Algorithm { FLOYD_STEINBERG, COLOR_GRADING }
 
     /**
+     * "뭉개기" 강도. 색상 양자화(6색 변환) 전에 이미지를 얼마나 흐릿하게(블러)
+     * 만들지를 결정합니다. 흐릿할수록 색이 급격히 바뀌는 경계/디더링 노이즈가
+     * 줄어들어서, e-ink 화면 갱신 시 실제로 색이 바뀌는 픽셀 수가 줄어듭니다.
+     * (배지 화면 갱신이 복잡한 이미지에서 실패하는 문제의 우회책으로 추가)
+     */
+    enum class SmudgeLevel(val blurRadius: Int) {
+        NONE(0),    // 기존 로직 그대로 (블러 없음)
+        MEDIUM(3),  // 살짝 뭉개기
+        HEAVY(7)    // 많이 뭉개기
+    }
+
+    /**
      * 외부(MainActivity)에서 호출하는 진입점 함수.
-     * 원본 비트맵을 받아서 목표 크기로 리사이즈 후, 선택된 알고리즘으로 변환합니다.
+     * 원본 비트맵을 받아서 목표 크기로 리사이즈 후, (필요하면 블러 적용 후)
+     * 선택된 알고리즘으로 변환합니다.
      *
      * @param source 원본 이미지 (갤러리에서 선택한 그대로)
      * @param targetWidth 배지의 가로 픽셀 수
      * @param targetHeight 배지의 세로 픽셀 수
      * @param algorithm 어떤 변환 알고리즘을 쓸지
+     * @param smudgeLevel 양자화 전 블러 강도 (기본 NONE = 기존과 동일)
      */
-    fun process(source: Bitmap, targetWidth: Int, targetHeight: Int, algorithm: Algorithm): Bitmap {
+    fun process(
+        source: Bitmap,
+        targetWidth: Int,
+        targetHeight: Int,
+        algorithm: Algorithm,
+        smudgeLevel: SmudgeLevel = SmudgeLevel.NONE
+    ): Bitmap {
         // Bitmap.createScaledBitmap: 이미지를 원하는 크기로 늘리거나 줄임
         // 마지막 true 파라미터는 "필터링을 써서 부드럽게 리사이즈" 옵션
         val resized = Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
 
+        val prepped = if (smudgeLevel.blurRadius > 0) boxBlur(resized, smudgeLevel.blurRadius) else resized
+
         return when (algorithm) {
-            Algorithm.COLOR_GRADING -> colorGrading(resized)
-            Algorithm.FLOYD_STEINBERG -> floydSteinberg(resized)
+            Algorithm.COLOR_GRADING -> colorGrading(prepped)
+            Algorithm.FLOYD_STEINBERG -> floydSteinberg(prepped)
         }
+    }
+
+    /**
+     * 단순 박스 블러(box blur). 가로 방향, 세로 방향으로 각각 한 번씩
+     * "주변 (2*radius+1)개 픽셀의 평균"으로 치환하는 방식입니다.
+     * RenderScript 등 무거운 라이브러리 없이 순수 계산으로 구현했습니다.
+     */
+    private fun boxBlur(bitmap: Bitmap, radius: Int): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        // 1단계: 가로 방향 블러
+        val temp = IntArray(w * h)
+        for (y in 0 until h) {
+            val rowBase = y * w
+            for (x in 0 until w) {
+                var sumR = 0; var sumG = 0; var sumB = 0; var count = 0
+                for (dx in -radius..radius) {
+                    val nx = (x + dx).coerceIn(0, w - 1)
+                    val p = pixels[rowBase + nx]
+                    sumR += Color.red(p); sumG += Color.green(p); sumB += Color.blue(p)
+                    count++
+                }
+                temp[rowBase + x] = Color.rgb(sumR / count, sumG / count, sumB / count)
+            }
+        }
+
+        // 2단계: 세로 방향 블러 (가로 블러 결과에 적용)
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val result = IntArray(w * h)
+        for (x in 0 until w) {
+            for (y in 0 until h) {
+                var sumR = 0; var sumG = 0; var sumB = 0; var count = 0
+                for (dy in -radius..radius) {
+                    val ny = (y + dy).coerceIn(0, h - 1)
+                    val p = temp[ny * w + x]
+                    sumR += Color.red(p); sumG += Color.green(p); sumB += Color.blue(p)
+                    count++
+                }
+                result[y * w + x] = Color.rgb(sumR / count, sumG / count, sumB / count)
+            }
+        }
+        out.setPixels(result, 0, w, 0, 0, w, h)
+        return out
     }
 
     /**
