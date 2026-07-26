@@ -28,6 +28,10 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.ScrollView
 import android.widget.Toast
+import android.view.MotionEvent
+import android.view.View
+import android.graphics.drawable.GradientDrawable
+import android.graphics.Color
 
 /**
  * MainActivity
@@ -402,19 +406,117 @@ class MainActivity : AppCompatActivity() {
         waitingForTag = true
     }
 
-    /** 지금까지 쌓인 SEND/RECV 로그를 스크롤 가능한 화면으로 보여줍니다. */
+    /**
+     * 지금까지 쌓인 SEND/RECV 로그를 스크롤 가능한 화면으로 보여줍니다.
+     *
+     * 기존 문제 2가지를 개선:
+     * 1) 스크롤이 불편함 -> 오른쪽에 손가락으로 잡고 끌 수 있는 큼직한
+     *    커스텀 스크롤 손잡이(thumb)를 추가. 기본 ScrollView의 시스템
+     *    스크롤바는 얇고 드래그가 안 돼서 직접 View로 구현.
+     * 2) 부분 복사가 안 됨 -> TextView.setTextIsSelectable(true)로
+     *    길게 눌러서 원하는 구간만 드래그 선택 후 복사할 수 있게 함
+     *    (안드로이드 기본 텍스트 선택 UI 그대로 사용).
+     */
     private fun showLogScreen() {
         rootContainer.removeAllViews()
 
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
+        // 손가락 터치 크기를 dp -> px로 변환하기 위한 밀도값
+        val density = resources.displayMetrics.density
+        val thumbWidthPx = (28 * density).toInt()       // 손잡이 두께: 기존 스크롤바보다 훨씬 굵게
+        val thumbMinHeightPx = (72 * density).toInt()    // 손잡이 최소 높이: 손가락으로 잡기 쉽게
+        val thumbMarginPx = (6 * density).toInt()
+
         val logText = TextView(this).apply {
             text = if (debugLog.isEmpty()) "아직 로그가 없습니다" else debugLog.toString()
             textSize = 12f
-            setPadding(20, 20, 20, 20)
+            // 길게 눌러 드래그하면 원하는 구간만 선택 -> 선택 메뉴에서 "복사"로 부분 복사 가능
+            setTextIsSelectable(true)
+            setPadding(20, 20, thumbWidthPx + thumbMarginPx * 2 + 10, 20) // 오른쪽은 손잡이 공간만큼 여유
         }
-        val scrollView = ScrollView(this).apply { addView(logText) }
-        root.addView(scrollView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+
+        // 시스템 기본 스크롤바는 끄고(너무 얇음), 우리가 만든 큰 손잡이로 대체
+        val scrollView = ScrollView(this).apply {
+            addView(logText)
+            isVerticalScrollBarEnabled = false
+        }
+
+        // 손잡이(thumb) 모양: 둥근 모서리 사각형
+        val scrollThumb = View(this).apply {
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = thumbWidthPx / 2f
+                setColor(Color.parseColor("#8000897B")) // 반투명 청록색, 잡고 있는지 눈에 잘 띄게
+            }
+        }
+
+        // 로그 화면 = [ScrollView] 위에 [손잡이]를 겹쳐 올린 FrameLayout
+        val logArea = FrameLayout(this)
+        logArea.addView(scrollView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        logArea.addView(scrollThumb, FrameLayout.LayoutParams(thumbWidthPx, thumbMinHeightPx).apply {
+            gravity = Gravity.END or Gravity.TOP
+            rightMargin = thumbMarginPx
+        })
+
+        // 콘텐츠/화면 크기가 실제로 정해진 뒤(레이아웃 완료 후)에 손잡이 크기와 동작을 계산
+        scrollView.post {
+            val contentHeight = logText.height
+            val viewportHeight = scrollView.height
+            val trackHeight = logArea.height
+
+            if (contentHeight <= viewportHeight || viewportHeight <= 0) {
+                // 내용이 화면보다 짧으면 스크롤 자체가 필요 없으니 손잡이 숨김
+                scrollThumb.visibility = View.GONE
+                return@post
+            }
+
+            // 손잡이 높이: 보이는 비율만큼이지만, 너무 작아지지 않게 최소값 보장
+            val ratio = viewportHeight.toFloat() / contentHeight.toFloat()
+            val thumbHeightPx = (trackHeight * ratio).toInt().coerceAtLeast(thumbMinHeightPx).coerceAtMost(trackHeight)
+            val thumbParams = scrollThumb.layoutParams as FrameLayout.LayoutParams
+            thumbParams.height = thumbHeightPx
+            scrollThumb.layoutParams = thumbParams
+
+            val maxThumbTravel = (trackHeight - thumbHeightPx).toFloat()
+            val maxScroll = (contentHeight - viewportHeight).toFloat()
+
+            // 손가락으로 일반 스크롤(로그 텍스트 부분을 스와이프)했을 때도 손잡이가 같이 따라 움직이게 동기화
+            scrollView.setOnScrollChangeListener { _, _, scrollY, _, _ ->
+                if (maxScroll > 0f) {
+                    val newThumbY = (scrollY / maxScroll) * maxThumbTravel
+                    scrollThumb.translationY = newThumbY.coerceIn(0f, maxThumbTravel)
+                }
+            }
+
+            // 손잡이를 직접 손가락으로 잡고 위아래로 끌면 그만큼 로그가 스크롤되게 처리
+            var dragStartRawY = 0f
+            var dragStartThumbY = 0f
+            scrollThumb.setOnTouchListener { view, event ->
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        dragStartRawY = event.rawY
+                        dragStartThumbY = view.translationY
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val delta = event.rawY - dragStartRawY
+                        val newThumbY = (dragStartThumbY + delta).coerceIn(0f, maxThumbTravel)
+                        view.translationY = newThumbY
+                        if (maxThumbTravel > 0f) {
+                            val newScrollY = ((newThumbY / maxThumbTravel) * maxScroll).toInt()
+                            scrollView.scrollTo(0, newScrollY)
+                        }
+                        true
+                    }
+                    else -> true
+                }
+            }
+        }
+
+        root.addView(logArea, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         val buttonRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -422,11 +524,11 @@ class MainActivity : AppCompatActivity() {
             setPadding(20, 20, 20, 40)
         }
         val copyButton = Button(this).apply {
-            text = "복사"
+            text = "전체 복사"
             setOnClickListener {
                 val clipboard = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
                 clipboard.setPrimaryClip(ClipData.newPlainText("nfc_log", debugLog.toString()))
-                Toast.makeText(this@MainActivity, "클립보드에 복사됨", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this@MainActivity, "전체 로그가 클립보드에 복사됨", Toast.LENGTH_SHORT).show()
             }
         }
         val backButton = Button(this).apply {
