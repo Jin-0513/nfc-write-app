@@ -2,11 +2,15 @@ package com.jin.nfcwrite
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.media.AudioManager
+import android.media.ToneGenerator
 import android.net.Uri
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.IsoDep
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
@@ -653,6 +657,34 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     }
     
     /**
+     * 짧은 알림음을 재생합니다. reader mode에서는 FLAG_READER_NO_PLATFORM_SOUNDS로
+     * 시스템 기본 태그 감지음을 꺼놨기 때문에, 배지를 대거나 뗄 때/중요 에러가 날 때
+     * 상황을 소리로 구분할 수 있도록 직접 넣어줍니다. 화면을 안 보고 있어도
+     * 알 수 있게 하기 위한 용도입니다.
+     */
+    private fun beep(toneType: Int, durationMs: Int) {
+        try {
+            val tg = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 100)
+            tg.startTone(toneType, durationMs)
+            // 소리가 다 끝난 뒤에 리소스를 정리 (바로 release하면 소리가 안 남)
+            Handler(Looper.getMainLooper()).postDelayed({
+                try { tg.release() } catch (_: Exception) {}
+            }, durationMs + 100L)
+        } catch (_: Exception) {
+            // 소리 재생 실패는 앱 동작에 영향 없으므로 무시
+        }
+    }
+
+    /** 배지가 감지되어 쓰기를 시작할 때: 짧은 "삑" 소리 1회 */
+    private fun playTagDetectedSound() = beep(ToneGenerator.TONE_PROP_BEEP, 150)
+
+    /** 전송이 끝까지 성공했을 때: 긍정적인 확인음 */
+    private fun playSuccessSound() = beep(ToneGenerator.TONE_PROP_ACK, 300)
+
+    /** 연결이 끊기거나 중요한 에러가 났을 때: 경고음 (좀 더 길고 낮게) */
+    private fun playErrorSound() = beep(ToneGenerator.TONE_SUP_ERROR, 400)
+
+    /**
      * NFC 태그(배지)가 감지되면 실제로 데이터를 전송하는 함수.
      * FMSC 프로토콜 문서에 나온 D2(Load Image) -> D4(Redraw) -> DE(Busy 확인)
      * 순서를 그대로 구현합니다.
@@ -663,10 +695,12 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
      */
     private fun handleTagForWrite(tag: Tag) {
         waitingForTag = false
+        playTagDetectedSound()
 
         CoroutineScope(Dispatchers.IO).launch {
             val isoDep = IsoDep.get(tag)
             if (isoDep == null) {
+                playErrorSound()
                 withContext(Dispatchers.Main) { statusText?.text = "지원하지 않는 태그입니다" }
                 waitingForTag = true
                 return@launch
@@ -771,6 +805,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
                 resetPendingWrite()
                 consecutiveTagLostCount = 0
+                playSuccessSound()
                 withContext(Dispatchers.Main) {
                     statusText?.text = "전송 완료! (화면에 정상 표시되는지 직접 확인해주세요)"
                 }
@@ -779,6 +814,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 try { isoDep.close() } catch (_: Exception) {}
                 consecutiveTagLostCount++
                 logDebug("!! TagLostException: 슬롯 $pendingSlotIndex, seq $pendingSeq (연속 ${consecutiveTagLostCount}회째)")
+                playErrorSound() // 배지가 떨어졌거나 연결이 끊어짐
 
                 if (consecutiveTagLostCount >= MAX_AUTO_RETRIES) {
                     // 배지를 뗐다 붙이지 않았는데도 reader mode가 같은 태그를 계속
@@ -798,6 +834,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             } catch (e: Exception) {
                 try { isoDep.close() } catch (_: Exception) {}
                 logDebug("!! Exception: ${e.message}")
+                playErrorSound()
                 withContext(Dispatchers.Main) {
                     statusText?.text = "쓰기 실패: ${e.message}"
                 }
