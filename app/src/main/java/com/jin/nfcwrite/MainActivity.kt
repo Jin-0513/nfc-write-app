@@ -100,7 +100,14 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     // 120,000바이트 전체 이미지를 30,000바이트씩 4개의 imageIndex(슬롯)로 나눠
     // 전송하는 실험입니다. 제조사 확인 전까지는 추정 기반 구현입니다.
     private val SLOT_SIZE = 30000
-    private val NUM_SLOTS = 4 // 120,000 / 30,000
+    // 슬롯 개수는 현재 선택된 이미지 크기(targetWidth x targetHeight, 4비트/픽셀)를
+    // 기준으로 동적으로 계산합니다. 400x600 -> 120,000바이트 -> 4슬롯,
+    // 200x300 -> 30,000바이트 -> 1슬롯.
+    private val NUM_SLOTS: Int
+        get() {
+            val totalBytes = targetWidth * targetHeight / 2
+            return (totalBytes + SLOT_SIZE - 1) / SLOT_SIZE
+        }
 
     private var pendingImageData: ByteArray? = null // 인코딩된 전체 이미지 데이터 (120,000바이트)
     private var pendingSlotIndex: Int = 0            // 지금 쓰고 있는 슬롯(imageIndex) 번호 (0~3)
@@ -361,6 +368,39 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         algoRow.addView(fsButton)
         algoRow.addView(cgButton)
         root.addView(algoRow)
+
+        // --- 크기 선택 버튼 줄 (저전압 가설 검증용: 400x600 정품 vs 200x300 축소 테스트) ---
+        val sizeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(20, 0, 20, 20)
+        }
+        val sizeLabel = TextView(this).apply {
+            text = "크기: ${targetWidth}x${targetHeight}"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 20, 0)
+        }
+        val size400Button = Button(this).apply {
+            text = "400x600 (정품)"
+            setOnClickListener {
+                targetWidth = 400
+                targetHeight = 600
+                applyAlgorithmAndShowEditor()
+            }
+        }
+        val size200Button = Button(this).apply {
+            text = "200x300 (테스트)"
+            setOnClickListener {
+                targetWidth = 200
+                targetHeight = 300
+                applyAlgorithmAndShowEditor()
+            }
+        }
+        sizeRow.addView(sizeLabel)
+        sizeRow.addView(size400Button)
+        sizeRow.addView(size200Button)
+        root.addView(sizeRow)
 
         // --- 하단 액션 버튼 줄 ---
         val actionRow = LinearLayout(this).apply {
