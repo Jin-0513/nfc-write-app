@@ -80,6 +80,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     private var processedBitmap: Bitmap? = null  // 6색 변환이 끝난 결과 이미지
     private var currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG // 기본 알고리즘
     private var currentSmudgeLevel = ImageProcessor.SmudgeLevel.NONE // 기본: 뭉개기 없음(기존 로직)
+    private var currentCleanLevel = ImageProcessor.CleanLevel.MEDIUM // 노이즈 감소 디더링 강도
 
     private var zoomImageView: ZoomableImageView? = null  // 편집 화면의 이미지 뷰 (줌 가능)
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
@@ -325,7 +326,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         // Dispatchers.Default: CPU 연산이 많은 작업(이미지 픽셀 처리)에
         // 적합한 스레드 풀. IO와는 성격이 달라서 구분해서 씁니다.
         CoroutineScope(Dispatchers.Default).launch {
-            val result = ImageProcessor.process(src, targetWidth, targetHeight, currentAlgorithm, currentSmudgeLevel)
+            val result = ImageProcessor.process(src, targetWidth, targetHeight, currentAlgorithm, currentSmudgeLevel, currentCleanLevel)
             withContext(Dispatchers.Main) {
                 processedBitmap = result
                 showEditorScreen()
@@ -455,6 +456,45 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         smudgeRow.addView(smudgeMediumButton)
         smudgeRow.addView(smudgeHeavyButton)
         root.addView(smudgeRow)
+
+        // --- 노이즈 감소 디더링 강도 선택 줄 (알고리즘이 '노이즈 감소 디더링'일 때만 의미 있음) ---
+        val cleanRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(20, 0, 20, 20)
+        }
+        val cleanLabel = TextView(this).apply {
+            text = "노이즈 감소 강도:"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 10, 0)
+        }
+        val cleanLowButton = Button(this).apply {
+            text = "약"
+            setOnClickListener {
+                currentCleanLevel = ImageProcessor.CleanLevel.LOW
+                applyAlgorithmAndShowEditor()
+            }
+        }
+        val cleanMediumButton = Button(this).apply {
+            text = "중"
+            setOnClickListener {
+                currentCleanLevel = ImageProcessor.CleanLevel.MEDIUM
+                applyAlgorithmAndShowEditor()
+            }
+        }
+        val cleanHighButton = Button(this).apply {
+            text = "강"
+            setOnClickListener {
+                currentCleanLevel = ImageProcessor.CleanLevel.HIGH
+                applyAlgorithmAndShowEditor()
+            }
+        }
+        cleanRow.addView(cleanLabel)
+        cleanRow.addView(cleanLowButton)
+        cleanRow.addView(cleanMediumButton)
+        cleanRow.addView(cleanHighButton)
+        root.addView(cleanRow)
 
         // --- 하단 액션 버튼 줄 ---
         val actionRow = LinearLayout(this).apply {

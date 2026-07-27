@@ -31,6 +31,20 @@ object ImageProcessor {
     }
 
     /**
+     * "노이즈 감소 디더링"의 강도. 원래 색과 팔레트 색의 차이(오차)가
+     * 이 기준보다 작으면 "이미 충분히 비슷한 색"으로 보고 확산을 생략합니다.
+     * 값이 클수록 더 많은 픽셀이 "충분히 비슷하다"고 판정되어 노이즈가 더
+     * 줄어들지만, 너무 크면 실제 그라데이션까지 뭉뚱그려져서 색 표현이 거칠어집니다.
+     * (실측 결과 기존 고정값 800은 사진 소스의 실제 노이즈 크기에 비해
+     *  너무 작아서 체감 효과가 거의 없었음 -> 조절 가능하게 변경)
+     */
+    enum class CleanLevel(val noiseThreshold: Int) {
+        LOW(1500),    // 약하게: 아주 미세한 노이즈만 제거
+        MEDIUM(4000), // 보통
+        HIGH(9000)    // 강하게: 꽤 큰 색 차이까지도 확산 생략
+    }
+
+    /**
      * 외부(MainActivity)에서 호출하는 진입점 함수.
      * 원본 비트맵을 받아서 목표 크기로 리사이즈 후, (필요하면 블러 적용 후)
      * 선택된 알고리즘으로 변환합니다.
@@ -40,13 +54,15 @@ object ImageProcessor {
      * @param targetHeight 배지의 세로 픽셀 수
      * @param algorithm 어떤 변환 알고리즘을 쓸지
      * @param smudgeLevel 양자화 전 블러 강도 (기본 NONE = 기존과 동일)
+     * @param cleanLevel FLOYD_STEINBERG_CLEAN일 때 노이즈 억제 강도 (기본 MEDIUM)
      */
     fun process(
         source: Bitmap,
         targetWidth: Int,
         targetHeight: Int,
         algorithm: Algorithm,
-        smudgeLevel: SmudgeLevel = SmudgeLevel.NONE
+        smudgeLevel: SmudgeLevel = SmudgeLevel.NONE,
+        cleanLevel: CleanLevel = CleanLevel.MEDIUM
     ): Bitmap {
         // Bitmap.createScaledBitmap: 이미지를 원하는 크기로 늘리거나 줄임
         // 마지막 true 파라미터는 "필터링을 써서 부드럽게 리사이즈" 옵션
@@ -57,7 +73,7 @@ object ImageProcessor {
         return when (algorithm) {
             Algorithm.COLOR_GRADING -> colorGrading(prepped)
             Algorithm.FLOYD_STEINBERG -> floydSteinberg(prepped)
-            Algorithm.FLOYD_STEINBERG_CLEAN -> floydSteinbergClean(prepped)
+            Algorithm.FLOYD_STEINBERG_CLEAN -> floydSteinbergClean(prepped, cleanLevel.noiseThreshold)
         }
     }
 
