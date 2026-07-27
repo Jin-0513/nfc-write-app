@@ -16,7 +16,7 @@ import android.graphics.Color
 object ImageProcessor {
 
     // 사용 가능한 변환 알고리즘 종류를 나타내는 열거형(enum)
-    enum class Algorithm { FLOYD_STEINBERG, COLOR_GRADING }
+    enum class Algorithm { FLOYD_STEINBERG, FLOYD_STEINBERG_CLEAN, COLOR_GRADING }
 
     /**
      * "뭉개기" 강도. 색상 양자화(6색 변환) 전에 이미지를 얼마나 흐릿하게(블러)
@@ -57,6 +57,7 @@ object ImageProcessor {
         return when (algorithm) {
             Algorithm.COLOR_GRADING -> colorGrading(prepped)
             Algorithm.FLOYD_STEINBERG -> floydSteinberg(prepped)
+            Algorithm.FLOYD_STEINBERG_CLEAN -> floydSteinbergClean(prepped)
         }
     }
 
@@ -207,6 +208,78 @@ object ImageProcessor {
                     }
                 }
                 // 7/16 + 3/16 + 5/16 + 1/16 = 16/16 = 1 (오차 100%가 정확히 분배됨)
+            }
+        }
+        return out
+    }
+
+    /**
+     * Floyd-Steinberg의 "노이즈 줄인" 버전.
+     *
+     * 제조사 앱과 비교해보니, 우리 기본 구현은 원래 균일해야 할 배경(흰 배경 등)
+     * 까지도 자글자글한 점 노이즈로 뒤덮이는데, 이건 원본 이미지의 JPEG 압축
+     * 노이즈나 아주 미세한 색조 차이까지 전부 "오차"로 취급해서 계속 주변 픽셀로
+     * 퍼뜨리기 때문입니다. 반면 제조사 쪽은 이미 팔레트 색과 충분히 가까운
+     * 픽셀은 오차를 확산시키지 않고 그냥 그 색으로 "스냅"시키는 것으로 보입니다.
+     *
+     * 그래서 여기서는: 원래 색과 선택된 팔레트 색의 차이(오차)가 일정 기준
+     * (noiseThreshold) 이하로 작으면 - 즉 "이미 충분히 비슷한 색"이면 -
+     * 오차를 주변에 퍼뜨리지 않고 버립니다. 실제로 색이 크게 차이 나는 부분
+     * (그라데이션/음영 경계)만 기존처럼 오차를 확산해서 디더링합니다.
+     *
+     * 부수 효과: 노이즈가 적은 만큼, 화면 전체에서 "실제로 색이 바뀌는 픽셀 수"도
+     * 자연히 줄어들어서 e-ink 화면 갱신 부담을 줄이는 데도 도움이 될 것으로 기대합니다.
+     */
+    private fun floydSteinbergClean(bitmap: Bitmap, noiseThreshold: Int = 800): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+
+        val r = Array(h) { y -> IntArray(w) { x -> Color.red(bitmap.getPixel(x, y)) } }
+        val g = Array(h) { y -> IntArray(w) { x -> Color.green(bitmap.getPixel(x, y)) } }
+        val b = Array(h) { y -> IntArray(w) { x -> Color.blue(bitmap.getPixel(x, y)) } }
+
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+
+        fun clamp(v: Int) = v.coerceIn(0, 255)
+
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val oldPixel = Color.rgb(clamp(r[y][x]), clamp(g[y][x]), clamp(b[y][x]))
+
+                val matched = ColorPalette.nearestColor(oldPixel)
+                out.setPixel(x, y, matched.rgb)
+
+                var errR = Color.red(oldPixel) - Color.red(matched.rgb)
+                var errG = Color.green(oldPixel) - Color.green(matched.rgb)
+                var errB = Color.blue(oldPixel) - Color.blue(matched.rgb)
+
+                // 오차 크기(유클리드 거리의 제곱)가 기준보다 작으면 "이미 충분히
+                // 비슷한 색"으로 보고 확산을 생략 (0으로 만듦) -> 잔노이즈 방지
+                val errDistSq = errR * errR + errG * errG + errB * errB
+                if (errDistSq <= noiseThreshold) {
+                    errR = 0; errG = 0; errB = 0
+                }
+
+                if (x + 1 < w) {
+                    r[y][x + 1] += errR * 7 / 16
+                    g[y][x + 1] += errG * 7 / 16
+                    b[y][x + 1] += errB * 7 / 16
+                }
+                if (y + 1 < h) {
+                    if (x - 1 >= 0) {
+                        r[y + 1][x - 1] += errR * 3 / 16
+                        g[y + 1][x - 1] += errG * 3 / 16
+                        b[y + 1][x - 1] += errB * 3 / 16
+                    }
+                    r[y + 1][x] += errR * 5 / 16
+                    g[y + 1][x] += errG * 5 / 16
+                    b[y + 1][x] += errB * 5 / 16
+                    if (x + 1 < w) {
+                        r[y + 1][x + 1] += errR * 1 / 16
+                        g[y + 1][x + 1] += errG * 1 / 16
+                        b[y + 1][x + 1] += errB * 1 / 16
+                    }
+                }
             }
         }
         return out

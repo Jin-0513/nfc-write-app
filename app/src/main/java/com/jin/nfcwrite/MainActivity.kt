@@ -363,6 +363,13 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 applyAlgorithmAndShowEditor() // 알고리즘 바뀌면 다시 변환해서 화면 갱신
             }
         }
+        val fsCleanButton = Button(this).apply {
+            text = "노이즈 감소 디더링"
+            setOnClickListener {
+                currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG_CLEAN
+                applyAlgorithmAndShowEditor()
+            }
+        }
         val cgButton = Button(this).apply {
             text = "컬러 그레이딩"
             setOnClickListener {
@@ -371,6 +378,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             }
         }
         algoRow.addView(fsButton)
+        algoRow.addView(fsCleanButton)
         algoRow.addView(cgButton)
         root.addView(algoRow)
 
