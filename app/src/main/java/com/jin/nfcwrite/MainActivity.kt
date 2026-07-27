@@ -383,7 +383,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         algoRow.addView(cgButton)
         root.addView(algoRow)
 
-        // --- 크기 선택 버튼 줄 (저전압 가설 검증용: 400x600 정품 vs 200x300 축소 테스트) ---
+        // --- 크기 선택 버튼 줄 (저전압 가설 검증용: 400x600 원사이즈 vs 200x300 축소 테스트) ---
         val sizeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -396,7 +396,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             setPadding(0, 0, 20, 0)
         }
         val size400Button = Button(this).apply {
-            text = "400x600 (정품)"
+            text = "400x600 (원사이즈)"
             setOnClickListener {
                 targetWidth = 400
                 targetHeight = 600
