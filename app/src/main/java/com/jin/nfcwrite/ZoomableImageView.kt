@@ -237,6 +237,42 @@ class ZoomableImageView @JvmOverloads constructor(
     }
 
     /**
+     * 지정된 크롭 영역(원본 이미지 좌표계)이 화면(틀)에 정확히 꽉 차도록
+     * 확대/이동 상태를 복원합니다. "쓰기" 후 편집 화면으로 돌아왔을 때,
+     * 이전에 확대/이동해뒀던 상태를 그대로 되살리기 위한 용도입니다.
+     */
+    fun setCropRect(rect: RectF) {
+        post {
+            val d = editBitmap ?: return@post
+            val dW = d.width.toFloat()
+            val dH = d.height.toFloat()
+            val viewW = width.toFloat()
+            val viewH = height.toFloat()
+            if (dW == 0f || dH == 0f || viewW == 0f || viewH == 0f) return@post
+
+            imgMatrix.reset()
+            // setRectToRect: "이 사각형(rect)이 저 사각형(뷰 전체)에 정확히
+            // 들어맞도록" 필요한 이동+확대 행렬을 한 번에 계산해줍니다.
+            imgMatrix.setRectToRect(RectF(rect), RectF(0f, 0f, viewW, viewH), Matrix.ScaleToFit.FILL)
+            clampMatrix()
+
+            // 이후 핀치줌 확대/축소 한도(minScale~maxScale) 계산이 기존과
+            // 일관되게 동작하도록, 지금 행렬의 실제 배율을 기준으로
+            // scaleFactor(틀을 꽉 채우는 배율 대비 몇 배인지)를 다시 계산해둡니다.
+            val values = FloatArray(9)
+            imgMatrix.getValues(values)
+            val actualScale = values[Matrix.MSCALE_X]
+            val baseCoverScale = max(viewW / dW, viewH / dH)
+            scaleFactor = if (baseCoverScale > 0f) (actualScale / baseCoverScale).coerceIn(minScale, maxScale) else 1f
+
+            isShowingProcessed = false
+            setImageBitmap(d)
+            imageMatrix = imgMatrix
+            onTransformSettled?.invoke() // 복원된 상태 기준으로 결과 미리보기도 한 번 갱신
+        }
+    }
+
+    /**
      * 지금 화면(틀)에 실제로 보이는 영역을, 편집용 원본 이미지의 픽셀
      * 좌표계로 환산해서 돌려줍니다. "쓰기"를 누를 때 이 사각형만큼만
      * 원본에서 잘라내서(crop) 배지에 씁니다. 즉 손가락으로 확대/이동한

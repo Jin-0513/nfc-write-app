@@ -2,6 +2,7 @@ package com.jin.nfcwrite
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.RectF
 import android.media.AudioManager
 import android.media.ToneGenerator
 import android.net.Uri
@@ -81,6 +82,15 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     private var processedBitmap: Bitmap? = null  // (현재 크롭+알고리즘 기준) 6색 변환이 끝난 결과 이미지
     private var currentAlgorithm = ImageProcessor.Algorithm.DITHER // 기본 알고리즘
     private var currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN // 노이즈 감소 디더링 강도(슬라이더 값)
+
+    // 메인 화면에 보여지는 틀의 가로 픽셀 크기 (실제 화면 픽셀 기준, dp 아님).
+    // 세로는 항상 targetWidth:targetHeight 비율(2:3)에 맞춰 자동으로 계산됨.
+    private var frameWidthPx = 800
+
+    // 마지막으로 확대/이동해서 확정한 크롭 영역(원본 이미지 좌표계).
+    // "쓰기" 후 편집 화면으로 돌아왔을 때 이 값으로 복원해서, 확대 상태가
+    // 유지되게 합니다. 새 이미지를 고르면 null로 초기화됩니다.
+    private var savedCropRect: RectF? = null
 
     private var zoomImageView: ZoomableImageView? = null      // 편집 화면의 이미지 뷰 (틀 안에서 확대/이동 + 결과 미리보기 겸용)
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
@@ -305,6 +315,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             withContext(Dispatchers.Main) {
                 if (bitmap != null) {
                     originalBitmap = bitmap
+                    savedCropRect = null // 새 이미지이므로 이전 크롭 상태는 무효
                     showEditorScreen()
                 }
             }
@@ -342,6 +353,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         // 지금 틀에 보이는 영역을 원본 좌표로 얻어옴. 아직 레이아웃이 안 잡혔으면
         // (초기 진입 시점 등) 원본 전체를 그대로 씁니다.
         val cropRect = zoomImageView?.getVisibleCropRect()
+        if (cropRect != null) savedCropRect = RectF(cropRect) // 나중에 복원할 수 있게 저장
         val cropped = if (cropRect != null && cropRect.width() >= 1f && cropRect.height() >= 1f) {
             try {
                 Bitmap.createBitmap(
@@ -398,16 +410,22 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         frame.addView(zoomImageView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        // 화면을 다 채우지 않고 폭을 줄여서, 아래 버튼들이 잘리지 않게 함 (기존보다 15% 키움)
-        root.addView(frame, LinearLayout.LayoutParams(dp(265), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        // 화면을 다 채우지 않고 폭을 줄여서, 아래 버튼들이 잘리지 않게 함.
+        // dp가 아니라 실제 화면 픽셀(frameWidthPx) 그대로 사용합니다.
+        root.addView(frame, LinearLayout.LayoutParams(frameWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             topMargin = dp(12)
             bottomMargin = dp(12)
         })
 
         // post{}: 뷰의 크기가 실제로 계산된 뒤에 줌 초기화를 실행 (타이밍 이슈 방지)
-        // resetZoom() 안에서 초기 상태 기준으로 결과 미리보기 갱신도 자동으로 호출됩니다.
-        zoomImageView?.post { zoomImageView?.resetZoom() }
+        // resetZoom()/setCropRect() 안에서 초기 상태 기준으로 결과 미리보기 갱신도 자동으로 호출됩니다.
+        val restoreRect = savedCropRect
+        if (restoreRect != null) {
+            zoomImageView?.setCropRect(restoreRect) // 이전에 확대/이동해뒀던 상태 복원
+        } else {
+            zoomImageView?.post { zoomImageView?.resetZoom() }
+        }
 
         // --- 알고리즘 선택 버튼 줄 ---
         val algoRow = LinearLayout(this).apply {
@@ -465,6 +483,41 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         sizeRow.addView(size400Button)
         sizeRow.addView(size200Button)
         root.addView(sizeRow)
+
+        // --- 화면 표시 크기(픽셀) 확대/축소 버튼 줄 ---
+        // 위 크기 선택은 "배지에 실제로 저장되는 해상도"이고, 이건 그냥
+        // 화면에 얼마나 크게 보여줄지(표시용)만 바꿉니다. 누를 때마다
+        // 가로 8px, 세로 12px씩(2:3 비율 유지) 커지거나 작아집니다.
+        val displaySizeRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(20, 0, 20, 10)
+        }
+        val frameHeightPx = frameWidthPx * targetHeight / targetWidth
+        val displaySizeLabel = TextView(this).apply {
+            text = "화면 크기: ${frameWidthPx}x${frameHeightPx}px"
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 20, 0)
+        }
+        val displayMinusButton = Button(this).apply {
+            text = "축소"
+            setOnClickListener {
+                frameWidthPx = (frameWidthPx - 8).coerceAtLeast(80)
+                showEditorScreen()
+            }
+        }
+        val displayPlusButton = Button(this).apply {
+            text = "확대"
+            setOnClickListener {
+                frameWidthPx = (frameWidthPx + 8).coerceAtMost(2000)
+                showEditorScreen()
+            }
+        }
+        displaySizeRow.addView(displaySizeLabel)
+        displaySizeRow.addView(displayMinusButton)
+        displaySizeRow.addView(displayPlusButton)
+        root.addView(displaySizeRow)
 
         // --- 노이즈 감소 강도 슬라이더 ('디더링' 선택 시에만 의미 있음, 0% = 순수 Floyd-Steinberg) ---
         val cleanLabelRow = LinearLayout(this).apply {
