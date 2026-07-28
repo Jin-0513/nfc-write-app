@@ -1,6 +1,7 @@
 package com.jin.nfcwrite
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.graphics.RectF
 import android.util.AttributeSet
@@ -27,6 +28,12 @@ import kotlin.math.max
  * 자동으로 그리지 않기 때문에(클리핑), 이 뷰의 크기 자체가 곧 "실제로
  * 배지에 쓰여질 영역"이 됩니다. getVisibleCropRect()로 지금 화면에 보이는
  * 영역을 원본 이미지 좌표로 환산해서 가져올 수 있습니다.
+ *
+ * 추가로, 별도의 작은 미리보기 화면 없이 "이 뷰 하나"가 편집용 원본 화면과
+ * 결과(다더링) 미리보기 화면을 겸하도록 만들었습니다: 손을 뗀 뒤
+ * showProcessedPreview()를 호출하면 다더링된 결과를 같은 자리에 보여주고,
+ * 사용자가 다시 손을 대는 순간 자동으로 편집 상태(원본 + 이전 확대/이동)로
+ * 복귀합니다.
  */
 class ZoomableImageView @JvmOverloads constructor(
     context: Context,
@@ -34,6 +41,7 @@ class ZoomableImageView @JvmOverloads constructor(
 ) : AppCompatImageView(context, attrs) {
 
     // 현재 이미지에 적용된 변환(이동+확대축소) 상태를 저장하는 행렬
+    // (항상 "편집용 원본 이미지" 기준으로 계산/유지됩니다)
     private val imgMatrix = Matrix()
 
     // 현재 확대 배율 (1.0 = 틀을 딱 채우는 크기)
@@ -45,6 +53,13 @@ class ZoomableImageView @JvmOverloads constructor(
     private var lastX = 0f
     private var lastY = 0f
     private var isPanning = false
+
+    // 지금 편집 중인 "원본" 비트맵 (틀 안에서 확대/이동하는 대상)
+    private var editBitmap: Bitmap? = null
+
+    // 지금 화면에 "다더링된 결과"를 보여주고 있는 중인지 여부.
+    // true인 동안 손가락을 대면, 확대/이동이 아니라 "편집 모드로 복귀"만 합니다.
+    private var isShowingProcessed = false
 
     /** 핀치줌/드래그 제스처가 끝났을 때(손가락을 뗐을 때) 호출되는 콜백. */
     var onTransformSettled: (() -> Unit)? = null
@@ -79,6 +94,12 @@ class ZoomableImageView @JvmOverloads constructor(
 
         // 이 뷰에 터치 이벤트가 들어올 때마다 실행되는 리스너 등록
         setOnTouchListener { _, event ->
+            // "결과 미리보기"를 보여주고 있던 중이면, 손을 대는 순간
+            // 편집 모드(원본 + 이전 확대/이동 상태)로 먼저 복귀시킵니다.
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                returnToEditModeIfNeeded()
+            }
+
             // 먼저 핀치줌 감지기에게 이벤트를 넘겨줌 (두 손가락 동작이면 여기서 처리됨)
             scaleDetector.onTouchEvent(event)
 
@@ -113,6 +134,43 @@ class ZoomableImageView @JvmOverloads constructor(
         }
     }
 
+    /** 편집(확대/이동) 대상이 되는 원본 이미지를 설정합니다. */
+    fun setEditBitmap(bitmap: Bitmap) {
+        editBitmap = bitmap
+        isShowingProcessed = false
+        setImageBitmap(bitmap)
+    }
+
+    /**
+     * 지금까지 확대/이동한 크롭 영역을 실제로 6색 변환(디더링)한 결과를
+     * 같은 화면(같은 큰 틀)에 그대로 보여줍니다. 별도의 작은 미리보기 없이,
+     * 이 화면 자체가 "지금 이 상태로 쓰기하면 이렇게 나온다"를 보여주는
+     * 셈입니다. 확대/이동에 쓰던 행렬(imgMatrix)은 그대로 메모리에
+     * 남아있어서, 사용자가 다시 손을 대는 순간 원래 편집 상태로 복귀합니다.
+     */
+    fun showProcessedPreview(processed: Bitmap) {
+        isShowingProcessed = true
+        setImageBitmap(processed)
+        // 다더링 결과는 이미 틀과 정확히 같은 비율이므로, 그냥 꽉 채우기만 하면 됩니다.
+        val fillMatrix = Matrix()
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val dW = processed.width.toFloat()
+        val dH = processed.height.toFloat()
+        if (w > 0 && h > 0 && dW > 0 && dH > 0) {
+            fillMatrix.postScale(w / dW, h / dH)
+        }
+        imageMatrix = fillMatrix
+    }
+
+    /** 결과 미리보기 상태였다면, 마지막 편집 상태(원본 + 이전 확대/이동)로 되돌립니다. */
+    private fun returnToEditModeIfNeeded() {
+        if (!isShowingProcessed) return
+        isShowingProcessed = false
+        editBitmap?.let { setImageBitmap(it) }
+        imageMatrix = imgMatrix // 예전에 확대/이동해뒀던 상태를 그대로 복원
+    }
+
     /**
      * 확대/이동을 하다 보면 이미지가 틀보다 작아지거나, 틀 밖으로 완전히
      * 밀려나서 빈 공간(흰 배경)이 보일 수 있습니다. 이 함수는 매 확대/이동
@@ -120,9 +178,8 @@ class ZoomableImageView @JvmOverloads constructor(
      * 강제로 보정합니다. (사진 크롭 앱들이 흔히 쓰는 방식과 동일)
      */
     private fun clampMatrix() {
-        val d = drawable ?: return
-        val dW = d.intrinsicWidth.toFloat()
-        val dH = d.intrinsicHeight.toFloat()
+        val dW = editBitmap?.width?.toFloat() ?: return
+        val dH = editBitmap?.height?.toFloat() ?: return
         if (dW == 0f || dH == 0f) return
 
         val values = FloatArray(9)
@@ -155,11 +212,10 @@ class ZoomableImageView @JvmOverloads constructor(
         // post {}: 이 뷰가 화면에 완전히 배치되고 크기(width/height)가
         // 확정된 다음에 실행되도록 예약합니다. (생성 직후엔 width/height가 0일 수 있어서)
         post {
-            val d = drawable ?: return@post
+            val dW = editBitmap?.width?.toFloat() ?: return@post
+            val dH = editBitmap?.height?.toFloat() ?: return@post
             val viewW = width.toFloat()
             val viewH = height.toFloat()
-            val dW = d.intrinsicWidth.toFloat()   // 원본 이미지의 실제 가로 크기
-            val dH = d.intrinsicHeight.toFloat()  // 원본 이미지의 실제 세로 크기
             if (dW == 0f || dH == 0f) return@post
 
             // "틀을 꽉 채우는" 배율 계산 (기존엔 min을 써서 이미지 전체가 다 보이게
@@ -173,24 +229,28 @@ class ZoomableImageView @JvmOverloads constructor(
             imgMatrix.reset()               // 행렬을 초기 상태로
             imgMatrix.postScale(scale, scale)     // 계산된 배율 적용
             imgMatrix.postTranslate(dx, dy)       // 중앙 정렬을 위한 이동 적용
+            isShowingProcessed = false
+            editBitmap?.let { setImageBitmap(it) }
             imageMatrix = imgMatrix
             onTransformSettled?.invoke()          // 초기 상태 기준으로 미리보기도 한 번 갱신
         }
     }
 
     /**
-     * 지금 화면(틀)에 실제로 보이는 영역을, 원본 이미지의 픽셀 좌표계로
-     * 환산해서 돌려줍니다. "쓰기"를 누를 때 이 사각형만큼만 원본에서
-     * 잘라내서(crop) 배지에 씁니다. 즉 손가락으로 확대/이동한 그대로가
-     * 반영되는 핵심 로직입니다.
+     * 지금 화면(틀)에 실제로 보이는 영역을, 편집용 원본 이미지의 픽셀
+     * 좌표계로 환산해서 돌려줍니다. "쓰기"를 누를 때 이 사각형만큼만
+     * 원본에서 잘라내서(crop) 배지에 씁니다. 즉 손가락으로 확대/이동한
+     * 그대로가 반영되는 핵심 로직입니다.
+     *
+     * (지금 화면에 결과 미리보기가 떠 있는 상태여도, imgMatrix 자체는 항상
+     * 원본 기준으로 유지되므로 정확한 값을 돌려줍니다.)
      *
      * @return 원본 이미지 좌표계의 사각형 (left, top, right, bottom).
      *         아직 이미지/레이아웃이 준비되지 않았으면 null.
      */
     fun getVisibleCropRect(): RectF? {
-        val d = drawable ?: return null
-        val dW = d.intrinsicWidth.toFloat()
-        val dH = d.intrinsicHeight.toFloat()
+        val dW = editBitmap?.width?.toFloat() ?: return null
+        val dH = editBitmap?.height?.toFloat() ?: return null
         if (dW == 0f || dH == 0f || width == 0 || height == 0) return null
 
         // 화면(뷰) 좌표를 원본 이미지 좌표로 되돌리려면 "역행렬"이 필요합니다.

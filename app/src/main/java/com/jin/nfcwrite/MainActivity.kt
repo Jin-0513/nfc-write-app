@@ -15,7 +15,6 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
-import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.SeekBar
 import android.widget.TextView
@@ -83,8 +82,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     private var currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG // 기본 알고리즘
     private var currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN // 노이즈 감소 디더링 강도(슬라이더 값)
 
-    private var zoomImageView: ZoomableImageView? = null      // 편집 화면의 이미지 뷰 (틀 안에서 확대/이동, 원본 표시)
-    private var previewImageView: ImageView? = null           // 현재 크롭+알고리즘 기준 디더링 결과 미리보기 (작게 표시)
+    private var zoomImageView: ZoomableImageView? = null      // 편집 화면의 이미지 뷰 (틀 안에서 확대/이동 + 결과 미리보기 겸용)
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
 
     // ===== 디버그 로그 =====
@@ -362,7 +360,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             val result = ImageProcessor.process(cropped, targetWidth, targetHeight, currentAlgorithm, currentCleanThreshold)
             withContext(Dispatchers.Main) {
                 processedBitmap = result
-                previewImageView?.setImageBitmap(result)
+                zoomImageView?.showProcessedPreview(result)
             }
         }
     }
@@ -371,43 +369,37 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         waitingForTag = false
         rootContainer.removeAllViews()
 
-        // 전체를 세로로 쌓는 레이아웃: [틀+원본이미지] - [작은 미리보기] - [버튼들]
+        // 전체를 세로로 쌓는 레이아웃: [틀(편집+결과 미리보기 겸용)] - [버튼들]
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        // --- 확대/이동 가능한 "틀" ---
+        // --- 확대/이동 가능한 "틀" (같은 틀이 결과 미리보기도 겸함) ---
         // 배지 해상도(targetWidth x targetHeight)와 정확히 같은 비율로 틀을 만들고,
         // 그 안에 원본 이미지를 꽉 채워서 보여줍니다. 손가락으로 핀치줌/드래그하면
         // 이 틀 안에서만 보이는 영역이 바뀌고, 그 영역이 곧 실제로 배지에 쓰여질
         // 내용입니다 (틀 밖은 안드로이드가 자동으로 그리지 않으므로 항상 정확히 일치).
+        // 손을 떼면 이 틀 자체가 6색 변환된 결과로 바뀌어서 보여주고(별도의 작은
+        // 미리보기 없음), 다시 손을 대면 편집 상태로 자동 복귀합니다.
         val frame = AspectRatioFrameLayout(this).apply {
             setAspectRatio(targetWidth, targetHeight)
         }
+        val editBmp = originalBitmap
         zoomImageView = ZoomableImageView(this).apply {
-            setImageBitmap(originalBitmap)
-            onTransformSettled = { schedulePreviewUpdate() } // 손을 뗀 순간 미리보기 갱신
+            if (editBmp != null) setEditBitmap(editBmp)
+            onTransformSettled = { schedulePreviewUpdate() } // 손을 뗀 순간 결과 미리보기로 갱신
         }
         frame.addView(zoomImageView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        root.addView(frame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        // 화면을 다 채우지 않고 폭을 줄여서, 아래 버튼들이 잘리지 않게 함
+        root.addView(frame, LinearLayout.LayoutParams(dp(230), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+            gravity = Gravity.CENTER_HORIZONTAL
+            topMargin = dp(12)
+            bottomMargin = dp(12)
+        })
 
         // post{}: 뷰의 크기가 실제로 계산된 뒤에 줌 초기화를 실행 (타이밍 이슈 방지)
-        // resetZoom() 안에서 초기 상태 기준으로 미리보기 갱신도 자동으로 호출됩니다.
+        // resetZoom() 안에서 초기 상태 기준으로 결과 미리보기 갱신도 자동으로 호출됩니다.
         zoomImageView?.post { zoomImageView?.resetZoom() }
-
-        // --- 작은 미리보기 (실제 6색 변환 결과를 보여줌) ---
-        val previewLabel = TextView(this).apply {
-            text = "미리보기 (실제 배지에 쓰여질 내용)"
-            textSize = 12f
-            gravity = Gravity.CENTER
-            setPadding(0, 10, 0, 4)
-        }
-        root.addView(previewLabel)
-        previewImageView = ImageView(this).apply {
-            scaleType = ImageView.ScaleType.FIT_CENTER
-            setImageBitmap(processedBitmap)
-        }
-        root.addView(previewImageView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(140)))
 
         // --- 알고리즘 선택 버튼 줄 ---
         val algoRow = LinearLayout(this).apply {
@@ -528,7 +520,12 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         actionRow.addView(writeButton)
         root.addView(actionRow)
 
-        rootContainer.addView(root, FrameLayout.LayoutParams(
+        // 화면 크기/이미지 비율에 따라 전체 내용이 한 화면보다 길어질 수 있어서,
+        // ScrollView로 감싸 스크롤 가능하게 합니다 (안 그러면 하단 버튼이 안 보임).
+        val scrollView = ScrollView(this).apply {
+            addView(root, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        rootContainer.addView(scrollView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
     }
