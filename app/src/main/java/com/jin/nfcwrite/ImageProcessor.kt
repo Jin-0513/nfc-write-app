@@ -19,108 +19,45 @@ object ImageProcessor {
     enum class Algorithm { FLOYD_STEINBERG, FLOYD_STEINBERG_CLEAN, COLOR_GRADING }
 
     /**
-     * "뭉개기" 강도. 색상 양자화(6색 변환) 전에 이미지를 얼마나 흐릿하게(블러)
-     * 만들지를 결정합니다. 흐릿할수록 색이 급격히 바뀌는 경계/디더링 노이즈가
-     * 줄어들어서, e-ink 화면 갱신 시 실제로 색이 바뀌는 픽셀 수가 줄어듭니다.
-     * (배지 화면 갱신이 복잡한 이미지에서 실패하는 문제의 우회책으로 추가)
+     * "노이즈 감소 디더링"의 강도 범위 (슬라이더로 조절).
+     * 원래 색과 팔레트 색의 차이(오차)가 이 기준보다 작으면 "이미 충분히
+     * 비슷한 색"으로 보고 확산을 생략합니다. 값이 클수록 더 많은 픽셀이
+     * "충분히 비슷하다"고 판정되어 노이즈가 더 줄어들지만, 너무 크면 실제
+     * 그라데이션까지 뭉뚱그려져서 색 표현이 거칠어집니다.
+     *
+     * CLEAN_THRESHOLD_MIN(슬라이더 맨 왼쪽/시작점)과 CLEAN_THRESHOLD_MAX(맨
+     * 오른쪽/끝점) 사이를 실시간으로 오가며 조절합니다.
      */
-    enum class SmudgeLevel(val blurRadius: Int) {
-        NONE(0),    // 기존 로직 그대로 (블러 없음)
-        MEDIUM(3),  // 살짝 뭉개기
-        HEAVY(7)    // 많이 뭉개기
-    }
-
-    /**
-     * "노이즈 감소 디더링"의 강도. 원래 색과 팔레트 색의 차이(오차)가
-     * 이 기준보다 작으면 "이미 충분히 비슷한 색"으로 보고 확산을 생략합니다.
-     * 값이 클수록 더 많은 픽셀이 "충분히 비슷하다"고 판정되어 노이즈가 더
-     * 줄어들지만, 너무 크면 실제 그라데이션까지 뭉뚱그려져서 색 표현이 거칠어집니다.
-     * (실측 결과 기존 고정값 800은 사진 소스의 실제 노이즈 크기에 비해
-     *  너무 작아서 체감 효과가 거의 없었음 -> 조절 가능하게 변경)
-     */
-    enum class CleanLevel(val noiseThreshold: Int) {
-        LOW(1500),    // 약하게: 아주 미세한 노이즈만 제거
-        MEDIUM(4000), // 보통
-        HIGH(9000)    // 강하게: 꽤 큰 색 차이까지도 확산 생략
-    }
+    const val CLEAN_THRESHOLD_MIN = 4000
+    const val CLEAN_THRESHOLD_MAX = 20000
 
     /**
      * 외부(MainActivity)에서 호출하는 진입점 함수.
-     * 원본 비트맵을 받아서 목표 크기로 리사이즈 후, (필요하면 블러 적용 후)
-     * 선택된 알고리즘으로 변환합니다.
+     * 원본 비트맵을 받아서 목표 크기로 리사이즈 후 선택된 알고리즘으로 변환합니다.
      *
-     * @param source 원본 이미지 (갤러리에서 선택한 그대로)
+     * @param source 원본 이미지 (갤러리에서 선택했거나, 손가락으로 크롭한 영역)
      * @param targetWidth 배지의 가로 픽셀 수
      * @param targetHeight 배지의 세로 픽셀 수
      * @param algorithm 어떤 변환 알고리즘을 쓸지
-     * @param smudgeLevel 양자화 전 블러 강도 (기본 NONE = 기존과 동일)
-     * @param cleanLevel FLOYD_STEINBERG_CLEAN일 때 노이즈 억제 강도 (기본 MEDIUM)
+     * @param cleanThreshold FLOYD_STEINBERG_CLEAN일 때 노이즈 억제 강도
+     *        (CLEAN_THRESHOLD_MIN ~ CLEAN_THRESHOLD_MAX 범위, 슬라이더 값)
      */
     fun process(
         source: Bitmap,
         targetWidth: Int,
         targetHeight: Int,
         algorithm: Algorithm,
-        smudgeLevel: SmudgeLevel = SmudgeLevel.NONE,
-        cleanLevel: CleanLevel = CleanLevel.MEDIUM
+        cleanThreshold: Int = CLEAN_THRESHOLD_MIN
     ): Bitmap {
         // Bitmap.createScaledBitmap: 이미지를 원하는 크기로 늘리거나 줄임
         // 마지막 true 파라미터는 "필터링을 써서 부드럽게 리사이즈" 옵션
         val resized = Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
 
-        val prepped = if (smudgeLevel.blurRadius > 0) boxBlur(resized, smudgeLevel.blurRadius) else resized
-
         return when (algorithm) {
-            Algorithm.COLOR_GRADING -> colorGrading(prepped)
-            Algorithm.FLOYD_STEINBERG -> floydSteinberg(prepped)
-            Algorithm.FLOYD_STEINBERG_CLEAN -> floydSteinbergClean(prepped, cleanLevel.noiseThreshold)
+            Algorithm.COLOR_GRADING -> colorGrading(resized)
+            Algorithm.FLOYD_STEINBERG -> floydSteinberg(resized)
+            Algorithm.FLOYD_STEINBERG_CLEAN -> floydSteinbergClean(resized, cleanThreshold)
         }
-    }
-
-    /**
-     * 단순 박스 블러(box blur). 가로 방향, 세로 방향으로 각각 한 번씩
-     * "주변 (2*radius+1)개 픽셀의 평균"으로 치환하는 방식입니다.
-     * RenderScript 등 무거운 라이브러리 없이 순수 계산으로 구현했습니다.
-     */
-    private fun boxBlur(bitmap: Bitmap, radius: Int): Bitmap {
-        val w = bitmap.width
-        val h = bitmap.height
-        val pixels = IntArray(w * h)
-        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
-
-        // 1단계: 가로 방향 블러
-        val temp = IntArray(w * h)
-        for (y in 0 until h) {
-            val rowBase = y * w
-            for (x in 0 until w) {
-                var sumR = 0; var sumG = 0; var sumB = 0; var count = 0
-                for (dx in -radius..radius) {
-                    val nx = (x + dx).coerceIn(0, w - 1)
-                    val p = pixels[rowBase + nx]
-                    sumR += Color.red(p); sumG += Color.green(p); sumB += Color.blue(p)
-                    count++
-                }
-                temp[rowBase + x] = Color.rgb(sumR / count, sumG / count, sumB / count)
-            }
-        }
-
-        // 2단계: 세로 방향 블러 (가로 블러 결과에 적용)
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
-        val result = IntArray(w * h)
-        for (x in 0 until w) {
-            for (y in 0 until h) {
-                var sumR = 0; var sumG = 0; var sumB = 0; var count = 0
-                for (dy in -radius..radius) {
-                    val ny = (y + dy).coerceIn(0, h - 1)
-                    val p = temp[ny * w + x]
-                    sumR += Color.red(p); sumG += Color.green(p); sumB += Color.blue(p)
-                    count++
-                }
-                result[y * w + x] = Color.rgb(sumR / count, sumG / count, sumB / count)
-            }
-        }
-        out.setPixels(result, 0, w, 0, 0, w, h)
-        return out
     }
 
     /**
@@ -246,24 +183,29 @@ object ImageProcessor {
      * 부수 효과: 노이즈가 적은 만큼, 화면 전체에서 "실제로 색이 바뀌는 픽셀 수"도
      * 자연히 줄어들어서 e-ink 화면 갱신 부담을 줄이는 데도 도움이 될 것으로 기대합니다.
      */
-    private fun floydSteinbergClean(bitmap: Bitmap, noiseThreshold: Int = 800): Bitmap {
+    private fun floydSteinbergClean(bitmap: Bitmap, noiseThreshold: Int): Bitmap {
         val w = bitmap.width
         val h = bitmap.height
 
-        val r = Array(h) { y -> IntArray(w) { x -> Color.red(bitmap.getPixel(x, y)) } }
-        val g = Array(h) { y -> IntArray(w) { x -> Color.green(bitmap.getPixel(x, y)) } }
-        val b = Array(h) { y -> IntArray(w) { x -> Color.blue(bitmap.getPixel(x, y)) } }
+        // getPixel()을 픽셀마다 개별 호출하면(특히 슬라이더로 실시간 재계산할 때)
+        // 눈에 띄게 느려서, getPixels()로 한 번에 배열로 읽어옵니다.
+        val srcPixels = IntArray(w * h)
+        bitmap.getPixels(srcPixels, 0, w, 0, 0, w, h)
 
-        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val r = IntArray(w * h) { i -> Color.red(srcPixels[i]) }
+        val g = IntArray(w * h) { i -> Color.green(srcPixels[i]) }
+        val b = IntArray(w * h) { i -> Color.blue(srcPixels[i]) }
+        val outPixels = IntArray(w * h)
 
         fun clamp(v: Int) = v.coerceIn(0, 255)
 
         for (y in 0 until h) {
             for (x in 0 until w) {
-                val oldPixel = Color.rgb(clamp(r[y][x]), clamp(g[y][x]), clamp(b[y][x]))
+                val idx = y * w + x
+                val oldPixel = Color.rgb(clamp(r[idx]), clamp(g[idx]), clamp(b[idx]))
 
                 val matched = ColorPalette.nearestColor(oldPixel)
-                out.setPixel(x, y, matched.rgb)
+                outPixels[idx] = matched.rgb
 
                 var errR = Color.red(oldPixel) - Color.red(matched.rgb)
                 var errG = Color.green(oldPixel) - Color.green(matched.rgb)
@@ -277,27 +219,26 @@ object ImageProcessor {
                 }
 
                 if (x + 1 < w) {
-                    r[y][x + 1] += errR * 7 / 16
-                    g[y][x + 1] += errG * 7 / 16
-                    b[y][x + 1] += errB * 7 / 16
+                    val i = idx + 1
+                    r[i] += errR * 7 / 16; g[i] += errG * 7 / 16; b[i] += errB * 7 / 16
                 }
                 if (y + 1 < h) {
                     if (x - 1 >= 0) {
-                        r[y + 1][x - 1] += errR * 3 / 16
-                        g[y + 1][x - 1] += errG * 3 / 16
-                        b[y + 1][x - 1] += errB * 3 / 16
+                        val i = idx + w - 1
+                        r[i] += errR * 3 / 16; g[i] += errG * 3 / 16; b[i] += errB * 3 / 16
                     }
-                    r[y + 1][x] += errR * 5 / 16
-                    g[y + 1][x] += errG * 5 / 16
-                    b[y + 1][x] += errB * 5 / 16
+                    val iDown = idx + w
+                    r[iDown] += errR * 5 / 16; g[iDown] += errG * 5 / 16; b[iDown] += errB * 5 / 16
                     if (x + 1 < w) {
-                        r[y + 1][x + 1] += errR * 1 / 16
-                        g[y + 1][x + 1] += errG * 1 / 16
-                        b[y + 1][x + 1] += errB * 1 / 16
+                        val i = idx + w + 1
+                        r[i] += errR * 1 / 16; g[i] += errG * 1 / 16; b[i] += errB * 1 / 16
                     }
                 }
             }
         }
+
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
         return out
     }
 }

@@ -15,7 +15,9 @@ import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
+import android.widget.SeekBar
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -77,12 +79,12 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
     // ===== 이미지 데이터 =====
     private var originalBitmap: Bitmap? = null   // 갤러리에서 방금 불러온 원본 이미지
-    private var processedBitmap: Bitmap? = null  // 6색 변환이 끝난 결과 이미지
+    private var processedBitmap: Bitmap? = null  // (현재 크롭+알고리즘 기준) 6색 변환이 끝난 결과 이미지
     private var currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG // 기본 알고리즘
-    private var currentSmudgeLevel = ImageProcessor.SmudgeLevel.NONE // 기본: 뭉개기 없음(기존 로직)
-    private var currentCleanLevel = ImageProcessor.CleanLevel.MEDIUM // 노이즈 감소 디더링 강도
+    private var currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN // 노이즈 감소 디더링 강도(슬라이더 값)
 
-    private var zoomImageView: ZoomableImageView? = null  // 편집 화면의 이미지 뷰 (줌 가능)
+    private var zoomImageView: ZoomableImageView? = null      // 편집 화면의 이미지 뷰 (틀 안에서 확대/이동, 원본 표시)
+    private var previewImageView: ImageView? = null           // 현재 크롭+알고리즘 기준 디더링 결과 미리보기 (작게 표시)
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
 
     // ===== 디버그 로그 =====
@@ -305,31 +307,62 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             withContext(Dispatchers.Main) {
                 if (bitmap != null) {
                     originalBitmap = bitmap
-                    applyAlgorithmAndShowEditor()
+                    showEditorScreen()
                 }
             }
         }
     }
 
     // ============================================================
-    // 화면 2: 편집/미리보기 (변환 + 줌 + 알고리즘 선택)
+    // 화면 2: 편집/미리보기 (틀 안에서 확대/이동 + 알고리즘 선택)
     // ============================================================
 
+    // 노이즈 감소 슬라이더를 손가락으로 계속 움직이는 동안 매 프레임마다 무겁게
+    // 다시 그리면 버벅이므로, 짧은 지연(디바운스)을 두고 마지막 값만 반영합니다.
+    private val previewHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private var pendingPreviewUpdate: Runnable? = null
+
+    private fun schedulePreviewUpdate(debounceMs: Long = 0L) {
+        pendingPreviewUpdate?.let { previewHandler.removeCallbacks(it) }
+        val r = Runnable { updatePreview() }
+        pendingPreviewUpdate = r
+        if (debounceMs > 0) previewHandler.postDelayed(r, debounceMs) else previewHandler.post(r)
+    }
+
     /**
-     * 현재 선택된 알고리즘(currentAlgorithm)으로 원본 이미지를 변환하고,
-     * 변환이 끝나면 편집 화면을 그립니다.
+     * 지금 틀(zoomImageView)에 보이는 영역만큼 원본 이미지를 잘라내고,
+     * 현재 선택된 알고리즘/노이즈 감소 강도로 변환해서 미리보기에 반영합니다.
+     *
+     * 손가락으로 확대/이동한 뒤(제스처 종료 시), 알고리즘/크기/노이즈 강도를
+     * 바꿀 때마다 호출됩니다. 여기서 만들어진 결과(processedBitmap)가 그대로
+     * "쓰기"에 쓰이므로, 화면에 보이는 미리보기 = 실제로 배지에 쓰여질 내용입니다.
      */
-    private fun applyAlgorithmAndShowEditor() {
-        resetPendingWrite() // 추가
+    private fun updatePreview() {
+        resetPendingWrite() // 크롭/알고리즘/크기가 바뀌면 이전 전송 진행 상태는 무효화
         val src = originalBitmap ?: return
+
+        // 지금 틀에 보이는 영역을 원본 좌표로 얻어옴. 아직 레이아웃이 안 잡혔으면
+        // (초기 진입 시점 등) 원본 전체를 그대로 씁니다.
+        val cropRect = zoomImageView?.getVisibleCropRect()
+        val cropped = if (cropRect != null && cropRect.width() >= 1f && cropRect.height() >= 1f) {
+            try {
+                Bitmap.createBitmap(
+                    src,
+                    cropRect.left.toInt(),
+                    cropRect.top.toInt(),
+                    cropRect.width().toInt().coerceAtLeast(1).coerceAtMost(src.width - cropRect.left.toInt()),
+                    cropRect.height().toInt().coerceAtLeast(1).coerceAtMost(src.height - cropRect.top.toInt())
+                )
+            } catch (e: Exception) { src }
+        } else src
 
         // Dispatchers.Default: CPU 연산이 많은 작업(이미지 픽셀 처리)에
         // 적합한 스레드 풀. IO와는 성격이 달라서 구분해서 씁니다.
         CoroutineScope(Dispatchers.Default).launch {
-            val result = ImageProcessor.process(src, targetWidth, targetHeight, currentAlgorithm, currentSmudgeLevel, currentCleanLevel)
+            val result = ImageProcessor.process(cropped, targetWidth, targetHeight, currentAlgorithm, currentCleanThreshold)
             withContext(Dispatchers.Main) {
                 processedBitmap = result
-                showEditorScreen()
+                previewImageView?.setImageBitmap(result)
             }
         }
     }
@@ -338,44 +371,69 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         waitingForTag = false
         rootContainer.removeAllViews()
 
-        // 전체를 세로로 쌓는 레이아웃: [이미지] - [알고리즘 버튼들] - [뒤로/쓰기 버튼들]
+        // 전체를 세로로 쌓는 레이아웃: [틀+원본이미지] - [작은 미리보기] - [버튼들]
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        // 우리가 만든 커스텀 뷰(줌 가능한 이미지뷰)를 생성하고 변환된 이미지를 넣음
-        zoomImageView = ZoomableImageView(this).apply { setImageBitmap(processedBitmap) }
-
-        // weight=1f: 남은 공간을 이 뷰가 다 차지하게 함
-        // (버튼들은 자기 크기만큼만 차지하고, 나머지 공간을 이미지가 채움)
-        root.addView(zoomImageView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
+        // --- 확대/이동 가능한 "틀" ---
+        // 배지 해상도(targetWidth x targetHeight)와 정확히 같은 비율로 틀을 만들고,
+        // 그 안에 원본 이미지를 꽉 채워서 보여줍니다. 손가락으로 핀치줌/드래그하면
+        // 이 틀 안에서만 보이는 영역이 바뀌고, 그 영역이 곧 실제로 배지에 쓰여질
+        // 내용입니다 (틀 밖은 안드로이드가 자동으로 그리지 않으므로 항상 정확히 일치).
+        val frame = AspectRatioFrameLayout(this).apply {
+            setAspectRatio(targetWidth, targetHeight)
+        }
+        zoomImageView = ZoomableImageView(this).apply {
+            setImageBitmap(originalBitmap)
+            onTransformSettled = { schedulePreviewUpdate() } // 손을 뗀 순간 미리보기 갱신
+        }
+        frame.addView(zoomImageView, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+        ))
+        root.addView(frame, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f))
 
         // post{}: 뷰의 크기가 실제로 계산된 뒤에 줌 초기화를 실행 (타이밍 이슈 방지)
+        // resetZoom() 안에서 초기 상태 기준으로 미리보기 갱신도 자동으로 호출됩니다.
         zoomImageView?.post { zoomImageView?.resetZoom() }
+
+        // --- 작은 미리보기 (실제 6색 변환 결과를 보여줌) ---
+        val previewLabel = TextView(this).apply {
+            text = "미리보기 (실제 배지에 쓰여질 내용)"
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(0, 10, 0, 4)
+        }
+        root.addView(previewLabel)
+        previewImageView = ImageView(this).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setImageBitmap(processedBitmap)
+        }
+        root.addView(previewImageView, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(140)))
 
         // --- 알고리즘 선택 버튼 줄 ---
         val algoRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(20, 20, 20, 20)
+            setPadding(20, 10, 20, 10)
         }
         val fsButton = Button(this).apply {
             text = "Floyd-Steinberg"
             setOnClickListener {
                 currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG
-                applyAlgorithmAndShowEditor() // 알고리즘 바뀌면 다시 변환해서 화면 갱신
+                schedulePreviewUpdate()
             }
         }
         val fsCleanButton = Button(this).apply {
             text = "노이즈 감소 디더링"
             setOnClickListener {
                 currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG_CLEAN
-                applyAlgorithmAndShowEditor()
+                schedulePreviewUpdate()
             }
         }
         val cgButton = Button(this).apply {
             text = "컬러 그레이딩"
             setOnClickListener {
                 currentAlgorithm = ImageProcessor.Algorithm.COLOR_GRADING
-                applyAlgorithmAndShowEditor()
+                schedulePreviewUpdate()
             }
         }
         algoRow.addView(fsButton)
@@ -387,7 +445,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         val sizeRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
-            setPadding(20, 0, 20, 20)
+            setPadding(20, 0, 20, 10)
         }
         val sizeLabel = TextView(this).apply {
             text = "크기: ${targetWidth}x${targetHeight}"
@@ -400,7 +458,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             setOnClickListener {
                 targetWidth = 400
                 targetHeight = 600
-                applyAlgorithmAndShowEditor()
+                showEditorScreen() // 비율은 안 바뀌지만, 상단 크기 표시 텍스트 갱신을 위해 재구성
             }
         }
         val size200Button = Button(this).apply {
@@ -408,7 +466,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             setOnClickListener {
                 targetWidth = 200
                 targetHeight = 300
-                applyAlgorithmAndShowEditor()
+                showEditorScreen()
             }
         }
         sizeRow.addView(sizeLabel)
@@ -416,85 +474,41 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         sizeRow.addView(size200Button)
         root.addView(sizeRow)
 
-        // --- 뭉개기(스머지) 강도 선택 버튼 줄 ---
-        // 색이 촘촘하게 바뀌는 디더링 노이즈가 화면 갱신 실패의 원인으로 보여서,
-        // 양자화 전에 이미지를 블러 처리해 색 전환 수를 줄이는 우회책입니다.
-        val smudgeRow = LinearLayout(this).apply {
+        // --- 노이즈 감소 강도 슬라이더 ('노이즈 감소 디더링' 선택 시에만 의미 있음) ---
+        val cleanLabelRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(20, 0, 20, 20)
+            setPadding(20, 0, 20, 0)
         }
-        val smudgeLabel = TextView(this).apply {
-            text = "뭉개기:"
+        val cleanValueLabel = TextView(this).apply {
+            val percent = ((currentCleanThreshold - ImageProcessor.CLEAN_THRESHOLD_MIN) * 100 /
+                (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN))
+            text = "노이즈 감소 강도: $percent%"
             textSize = 14f
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 10, 0)
         }
-        val smudgeNoneButton = Button(this).apply {
-            text = "1.그대로"
-            setOnClickListener {
-                currentSmudgeLevel = ImageProcessor.SmudgeLevel.NONE
-                applyAlgorithmAndShowEditor()
-            }
-        }
-        val smudgeMediumButton = Button(this).apply {
-            text = "2.살짝"
-            setOnClickListener {
-                currentSmudgeLevel = ImageProcessor.SmudgeLevel.MEDIUM
-                applyAlgorithmAndShowEditor()
-            }
-        }
-        val smudgeHeavyButton = Button(this).apply {
-            text = "3.많이"
-            setOnClickListener {
-                currentSmudgeLevel = ImageProcessor.SmudgeLevel.HEAVY
-                applyAlgorithmAndShowEditor()
-            }
-        }
-        smudgeRow.addView(smudgeLabel)
-        smudgeRow.addView(smudgeNoneButton)
-        smudgeRow.addView(smudgeMediumButton)
-        smudgeRow.addView(smudgeHeavyButton)
-        root.addView(smudgeRow)
+        cleanLabelRow.addView(cleanValueLabel)
+        root.addView(cleanLabelRow)
 
-        // --- 노이즈 감소 디더링 강도 선택 줄 (알고리즘이 '노이즈 감소 디더링'일 때만 의미 있음) ---
-        val cleanRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER
-            setPadding(20, 0, 20, 20)
+        val cleanSeekBar = SeekBar(this).apply {
+            max = 100
+            progress = ((currentCleanThreshold - ImageProcessor.CLEAN_THRESHOLD_MIN) * 100 /
+                (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN))
+            setPadding(20, 0, 20, 10)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
+                    if (!fromUser) return
+                    currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN +
+                        (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN) * progress / 100
+                    cleanValueLabel.text = "노이즈 감소 강도: $progress%"
+                    // 손가락으로 계속 움직이는 동안은 살짝 지연을 둬서 버벅임 없이 실시간처럼 갱신
+                    schedulePreviewUpdate(80L)
+                }
+                override fun onStartTrackingTouch(seekBar: SeekBar) {}
+                override fun onStopTrackingTouch(seekBar: SeekBar) {
+                    schedulePreviewUpdate() // 손을 뗀 순간엔 지연 없이 바로 최종 반영
+                }
+            })
         }
-        val cleanLabel = TextView(this).apply {
-            text = "노이즈 감소 강도:"
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setPadding(0, 0, 10, 0)
-        }
-        val cleanLowButton = Button(this).apply {
-            text = "약"
-            setOnClickListener {
-                currentCleanLevel = ImageProcessor.CleanLevel.LOW
-                applyAlgorithmAndShowEditor()
-            }
-        }
-        val cleanMediumButton = Button(this).apply {
-            text = "중"
-            setOnClickListener {
-                currentCleanLevel = ImageProcessor.CleanLevel.MEDIUM
-                applyAlgorithmAndShowEditor()
-            }
-        }
-        val cleanHighButton = Button(this).apply {
-            text = "강"
-            setOnClickListener {
-                currentCleanLevel = ImageProcessor.CleanLevel.HIGH
-                applyAlgorithmAndShowEditor()
-            }
-        }
-        cleanRow.addView(cleanLabel)
-        cleanRow.addView(cleanLowButton)
-        cleanRow.addView(cleanMediumButton)
-        cleanRow.addView(cleanHighButton)
-        root.addView(cleanRow)
+        root.addView(cleanSeekBar)
 
         // --- 하단 액션 버튼 줄 ---
         val actionRow = LinearLayout(this).apply {
@@ -518,6 +532,9 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
     }
+
+    /** dp 단위를 실제 픽셀(px)로 변환하는 헬퍼 */
+    private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     // ============================================================
     // 화면 3: 배지 태그 대기 & NFC 쓰기
