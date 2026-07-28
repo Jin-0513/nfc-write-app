@@ -79,7 +79,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     // ===== 이미지 데이터 =====
     private var originalBitmap: Bitmap? = null   // 갤러리에서 방금 불러온 원본 이미지
     private var processedBitmap: Bitmap? = null  // (현재 크롭+알고리즘 기준) 6색 변환이 끝난 결과 이미지
-    private var currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG // 기본 알고리즘
+    private var currentAlgorithm = ImageProcessor.Algorithm.DITHER // 기본 알고리즘
     private var currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN // 노이즈 감소 디더링 강도(슬라이더 값)
 
     private var zoomImageView: ZoomableImageView? = null      // 편집 화면의 이미지 뷰 (틀 안에서 확대/이동 + 결과 미리보기 겸용)
@@ -381,6 +381,14 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         // 미리보기 없음), 다시 손을 대면 편집 상태로 자동 복귀합니다.
         val frame = AspectRatioFrameLayout(this).apply {
             setAspectRatio(targetWidth, targetHeight)
+            // 흰색 배경 이미지일 때 앱 배경과 구분이 안 가서, 항상 보이는 테두리를
+            // 추가합니다. background(뒤)가 아니라 foreground(맨 위)로 그려야
+            // 이미지가 테두리를 덮어버리지 않습니다.
+            foreground = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                setStroke(dp(2), Color.parseColor("#808080"))
+                setColor(Color.TRANSPARENT)
+            }
         }
         val editBmp = originalBitmap
         zoomImageView = ZoomableImageView(this).apply {
@@ -390,8 +398,8 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         frame.addView(zoomImageView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        // 화면을 다 채우지 않고 폭을 줄여서, 아래 버튼들이 잘리지 않게 함
-        root.addView(frame, LinearLayout.LayoutParams(dp(230), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
+        // 화면을 다 채우지 않고 폭을 줄여서, 아래 버튼들이 잘리지 않게 함 (기존보다 15% 키움)
+        root.addView(frame, LinearLayout.LayoutParams(dp(265), ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             gravity = Gravity.CENTER_HORIZONTAL
             topMargin = dp(12)
             bottomMargin = dp(12)
@@ -407,17 +415,10 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             gravity = Gravity.CENTER
             setPadding(20, 10, 20, 10)
         }
-        val fsButton = Button(this).apply {
-            text = "Floyd-Steinberg"
+        val ditherButton = Button(this).apply {
+            text = "디더링"
             setOnClickListener {
-                currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG
-                schedulePreviewUpdate()
-            }
-        }
-        val fsCleanButton = Button(this).apply {
-            text = "노이즈 감소 디더링"
-            setOnClickListener {
-                currentAlgorithm = ImageProcessor.Algorithm.FLOYD_STEINBERG_CLEAN
+                currentAlgorithm = ImageProcessor.Algorithm.DITHER
                 schedulePreviewUpdate()
             }
         }
@@ -428,8 +429,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 schedulePreviewUpdate()
             }
         }
-        algoRow.addView(fsButton)
-        algoRow.addView(fsCleanButton)
+        algoRow.addView(ditherButton)
         algoRow.addView(cgButton)
         root.addView(algoRow)
 
@@ -466,7 +466,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         sizeRow.addView(size200Button)
         root.addView(sizeRow)
 
-        // --- 노이즈 감소 강도 슬라이더 ('노이즈 감소 디더링' 선택 시에만 의미 있음) ---
+        // --- 노이즈 감소 강도 슬라이더 ('디더링' 선택 시에만 의미 있음, 0% = 순수 Floyd-Steinberg) ---
         val cleanLabelRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setPadding(20, 0, 20, 0)
@@ -480,11 +480,31 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         cleanLabelRow.addView(cleanValueLabel)
         root.addView(cleanLabelRow)
 
-        val cleanSeekBar = SeekBar(this).apply {
+        // 슬라이더 진행률(0~100)을 실제 임계값에 반영하고 화면을 갱신하는 공용 함수.
+        // 슬라이더를 직접 드래그할 때와, -/+ 버튼을 누를 때 모두 이 함수를 통해 처리합니다.
+        lateinit var cleanSeekBar: SeekBar
+        fun applyCleanProgress(progress: Int, debounceMs: Long) {
+            val clamped = progress.coerceIn(0, 100)
+            currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN +
+                (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN) * clamped / 100
+            cleanValueLabel.text = "노이즈 감소 강도: $clamped%"
+            if (cleanSeekBar.progress != clamped) cleanSeekBar.progress = clamped // 버튼으로 바꾼 경우 슬라이더 위치도 동기화
+            if (debounceMs > 0) schedulePreviewUpdate(debounceMs) else schedulePreviewUpdate()
+        }
+
+        val cleanSliderRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(10, 0, 10, 10)
+        }
+        val cleanMinusButton = Button(this).apply {
+            text = "−"
+            setOnClickListener { applyCleanProgress(cleanSeekBar.progress - 1, 0L) }
+        }
+        cleanSeekBar = SeekBar(this).apply {
             max = 100
             progress = ((currentCleanThreshold - ImageProcessor.CLEAN_THRESHOLD_MIN) * 100 /
                 (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN))
-            setPadding(20, 0, 20, 10)
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(seekBar: SeekBar, progress: Int, fromUser: Boolean) {
                     if (!fromUser) return
@@ -500,7 +520,14 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 }
             })
         }
-        root.addView(cleanSeekBar)
+        val cleanPlusButton = Button(this).apply {
+            text = "+"
+            setOnClickListener { applyCleanProgress(cleanSeekBar.progress + 1, 0L) }
+        }
+        cleanSliderRow.addView(cleanMinusButton)
+        cleanSliderRow.addView(cleanSeekBar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        cleanSliderRow.addView(cleanPlusButton)
+        root.addView(cleanSliderRow)
 
         // --- 하단 액션 버튼 줄 ---
         val actionRow = LinearLayout(this).apply {
