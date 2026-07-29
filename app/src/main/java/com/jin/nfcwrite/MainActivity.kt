@@ -85,7 +85,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
     // 메인 화면에 보여지는 틀의 가로 픽셀 크기 (실제 화면 픽셀 기준, dp 아님).
     // 세로는 항상 targetWidth:targetHeight 비율(2:3)에 맞춰 자동으로 계산됨.
-    private var frameWidthPx = 600
+    private var frameWidthPx = 400
 
     // 마지막으로 확대/이동해서 확정한 크롭 영역(원본 이미지 좌표계).
     // "쓰기" 후 편집 화면으로 돌아왔을 때 이 값으로 복원해서, 확대 상태가

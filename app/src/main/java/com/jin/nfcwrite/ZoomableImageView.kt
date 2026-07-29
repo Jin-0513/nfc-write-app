@@ -100,6 +100,12 @@ class ZoomableImageView @JvmOverloads constructor(
                 returnToEditModeIfNeeded()
             }
 
+            // 이 뷰가 ScrollView 등 스크롤 가능한 부모 안에 들어있으면,
+            // 손가락으로 이미지를 옮기려는 동작을 부모가 "화면 스크롤"로
+            // 가로채 갈 수 있습니다. 그래서 터치가 시작되는 순간 부모에게
+            // "내가 처리할 테니 가로채지 마" 라고 명시적으로 요청합니다.
+            parent?.requestDisallowInterceptTouchEvent(true)
+
             // 먼저 핀치줌 감지기에게 이벤트를 넘겨줌 (두 손가락 동작이면 여기서 처리됨)
             scaleDetector.onTouchEvent(event)
 
@@ -127,6 +133,7 @@ class ZoomableImageView @JvmOverloads constructor(
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                     isPanning = false
+                    parent?.requestDisallowInterceptTouchEvent(false) // 제스처 끝났으니 원래대로 되돌림
                     onTransformSettled?.invoke() // 제스처가 끝났으니, 최종 결과를 반영하라고 알림
                 }
             }
