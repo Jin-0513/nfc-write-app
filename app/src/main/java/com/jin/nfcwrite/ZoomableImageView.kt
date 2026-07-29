@@ -273,6 +273,26 @@ class ZoomableImageView @JvmOverloads constructor(
     }
 
     /**
+     * 버튼으로 확대/축소할 때 사용합니다. 틀(뷰) 크기는 그대로 두고,
+     * 뷰 중앙을 기준으로 이미지만 확대/축소합니다. 핀치줌(onScale)과
+     * 동일한 원리이며, 손가락 제스처 대신 버튼 클릭으로 같은 동작을 합니다.
+     *
+     * @param factor 1보다 크면 확대, 1보다 작으면 축소 (예: 1.05 = 5% 확대)
+     */
+    fun zoomBy(factor: Float) {
+        returnToEditModeIfNeeded() // 결과 미리보기 중이었다면 먼저 편집 모드로
+        val prevScale = scaleFactor
+        scaleFactor = (scaleFactor * factor).coerceIn(minScale, maxScale)
+        val actualFactor = scaleFactor / prevScale // 한도에 걸려 실제 배율이 요청과 다를 수 있음
+        val cx = width / 2f
+        val cy = height / 2f
+        imgMatrix.postScale(actualFactor, actualFactor, cx, cy)
+        clampMatrix()
+        imageMatrix = imgMatrix
+        onTransformSettled?.invoke() // 버튼 클릭도 하나의 "제스처 종료"로 취급해서 결과 미리보기 갱신
+    }
+
+    /**
      * 지금 화면(틀)에 실제로 보이는 영역을, 편집용 원본 이미지의 픽셀
      * 좌표계로 환산해서 돌려줍니다. "쓰기"를 누를 때 이 사각형만큼만
      * 원본에서 잘라내서(crop) 배지에 씁니다. 즉 손가락으로 확대/이동한

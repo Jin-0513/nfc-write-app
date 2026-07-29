@@ -484,40 +484,33 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         sizeRow.addView(size200Button)
         root.addView(sizeRow)
 
-        // --- 화면 표시 크기(픽셀) 확대/축소 버튼 줄 ---
-        // 위 크기 선택은 "배지에 실제로 저장되는 해상도"이고, 이건 그냥
-        // 화면에 얼마나 크게 보여줄지(표시용)만 바꿉니다. 누를 때마다
-        // 가로 8px, 세로 12px씩(2:3 비율 유지) 커지거나 작아집니다.
-        val displaySizeRow = LinearLayout(this).apply {
+        // --- 이미지 확대/축소 버튼 줄 ---
+        // 틀(화면 표시 영역) 크기는 그대로 고정하고, 그 안의 이미지만
+        // 확대/축소합니다. 손가락 핀치줌과 완전히 같은 동작을 버튼으로도
+        // 할 수 있게 한 것입니다. 누를 때마다 10%씩 확대/축소됩니다.
+        val zoomRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
             setPadding(20, 0, 20, 10)
         }
-        val frameHeightPx = frameWidthPx * targetHeight / targetWidth
-        val displaySizeLabel = TextView(this).apply {
-            text = "화면 크기: ${frameWidthPx}x${frameHeightPx}px"
+        val zoomLabel = TextView(this).apply {
+            text = "이미지 확대/축소:"
             textSize = 14f
             gravity = Gravity.CENTER
             setPadding(0, 0, 20, 0)
         }
-        val displayMinusButton = Button(this).apply {
+        val zoomOutButton = Button(this).apply {
             text = "축소"
-            setOnClickListener {
-                frameWidthPx = (frameWidthPx - 8).coerceAtLeast(80)
-                showEditorScreen()
-            }
+            setOnClickListener { zoomImageView?.zoomBy(1f / 1.1f) }
         }
-        val displayPlusButton = Button(this).apply {
+        val zoomInButton = Button(this).apply {
             text = "확대"
-            setOnClickListener {
-                frameWidthPx = (frameWidthPx + 8).coerceAtMost(2000)
-                showEditorScreen()
-            }
+            setOnClickListener { zoomImageView?.zoomBy(1.1f) }
         }
-        displaySizeRow.addView(displaySizeLabel)
-        displaySizeRow.addView(displayMinusButton)
-        displaySizeRow.addView(displayPlusButton)
-        root.addView(displaySizeRow)
+        zoomRow.addView(zoomLabel)
+        zoomRow.addView(zoomOutButton)
+        zoomRow.addView(zoomInButton)
+        root.addView(zoomRow)
 
         // --- 노이즈 감소 강도 슬라이더 ('디더링' 선택 시에만 의미 있음, 0% = 순수 Floyd-Steinberg) ---
         val cleanLabelRow = LinearLayout(this).apply {
