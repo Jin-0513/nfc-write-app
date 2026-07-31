@@ -1001,10 +1001,13 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 }
                 logDebug("--- Redraw 시도 ${attempt + 1} (대기 모드) ---")
 
-                // 대기 모드(waitMode=true)에서 문제가 발생하여, 200x300에서 검증된
-                // 즉시 응답 모드(waitMode=false)로 되돌립니다. 재시도 로직과
-                // DE 폴링 시간 연장은 그대로 유지합니다.
-                transceiveChecked(isoDep, buildRedrawApdu(imageIndex, waitMode = false))
+                // 예전엔 대기 모드에서 문제가 있어서 즉시 응답 모드(waitMode=false)로
+                // 되돌렸었는데, 로그 라벨만 "대기 모드"로 남아있고 실제로는 계속
+                // 즉시 응답 모드로 전송되고 있던 버그를 발견해서 바로잡았습니다.
+                // 그리고 그 "대기 모드가 문제였다"는 결론은 foreground dispatch
+                // 시절의 훨씬 원시적인 코드에서 낸 것이라, reader mode/재폴링/세션
+                // 리프레시 등이 갖춰진 지금 코드로 waitMode=true를 다시 검증해봅니다.
+                transceiveChecked(isoDep, buildRedrawApdu(imageIndex, waitMode = true))
                 logDebug("--- Redraw 명령 성공, Busy 상태 확인 시작 ---")
                 waitUntilNotBusy(isoDep)
                 logDebug("--- 화면 갱신 완료 확인 ---")
