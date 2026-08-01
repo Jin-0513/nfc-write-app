@@ -2,6 +2,7 @@ package com.jin.nfcwrite
 
 import android.graphics.Bitmap
 import android.graphics.Color
+import kotlin.math.sqrt
 
 /**
  * ImageProcessor
@@ -9,20 +10,26 @@ import android.graphics.Color
  * 원본 이미지를 배지 화면 크기로 리사이즈하고,
  * 6색 팔레트로 변환(색상 양자화)하는 로직을 담당합니다.
  *
- * 두 가지 변환 알고리즘을 제공합니다:
- * 1) DITHER: Floyd-Steinberg 디더링 기법으로 오차를 주변 픽셀에 분산시켜
- *    자연스럽게 표현. 노이즈 감소 강도(cleanThreshold)를 0으로 두면 원래의
- *    순수 Floyd-Steinberg와 동일하게 동작하고, 값을 올릴수록 이미 충분히
- *    비슷한 색은 오차 확산을 생략해서 잔노이즈가 줄어듭니다.
- * 2) COLOR_GRADING: 각 픽셀을 독립적으로 가장 가까운 팔레트 색으로 바꿈 (단순, 빠름)
+ * 팔레트로 매핑하기 전에 항상 아래 두 가지 전처리를 거칩니다 (6색 E-Paper
+ * 특성상 이 전처리가 없으면 색이 뭉개지고 윤곽선이 흐릿해지기 쉽습니다):
+ * 1) 명암비/채도 상승: 팔레트 6색과 더 뚜렷하게 구분되도록 대비를 키움
+ * 2) 선화(윤곽선) 강조: 경계가 강한 부분을 더 진하게 만들어 윤곽선을 살림
+ *
+ * 그 다음 세 가지 변환 알고리즘 중 하나로 최종 양자화합니다:
+ * 1) DITHER: Floyd-Steinberg 디더링. 오차를 주변 픽셀에 분산시켜 자연스럽게
+ *    표현. 노이즈 감소 강도(cleanThreshold)를 0으로 두면 원래의 순수
+ *    Floyd-Steinberg와 동일하게 동작.
+ * 2) ATKINSON: Atkinson 디더링. 오차의 일부(3/4)만 분산시키고 나머지는
+ *    버려서, Floyd-Steinberg보다 대비가 강하고 깔끔한 만화/선화 느낌이 남.
+ * 3) COLOR_GRADING: 각 픽셀을 독립적으로 가장 가까운 팔레트 색으로 바꿈 (단순, 빠름)
  */
 object ImageProcessor {
 
     // 사용 가능한 변환 알고리즘 종류를 나타내는 열거형(enum)
-    enum class Algorithm { DITHER, COLOR_GRADING }
+    enum class Algorithm { DITHER, ATKINSON, COLOR_GRADING }
 
     /**
-     * "노이즈 감소" 강도 범위 (슬라이더로 조절).
+     * "노이즈 감소" 강도 범위 (슬라이더로 조절, DITHER에만 적용).
      * 원래 색과 팔레트 색의 차이(오차)가 이 기준보다 작으면 "이미 충분히
      * 비슷한 색"으로 보고 확산을 생략합니다. 값이 클수록 더 많은 픽셀이
      * "충분히 비슷하다"고 판정되어 노이즈가 더 줄어들지만, 너무 크면 실제
@@ -35,9 +42,17 @@ object ImageProcessor {
     const val CLEAN_THRESHOLD_MIN = 0
     const val CLEAN_THRESHOLD_MAX = 20000
 
+    // 팔레트 매핑 전 명암비/채도를 얼마나 올릴지 (1.175 = 17.5% 상승, 요청 범위 15~20% 중간값)
+    private const val CONTRAST_BOOST = 1.175f
+    private const val SATURATION_BOOST = 1.175f
+
+    // 선화(윤곽선) 강조 강도 (0=끔, 1=최대). 엣지가 강한 픽셀을 이 비율만큼 검정 쪽으로 당김
+    private const val EDGE_EMPHASIS_STRENGTH = 0.45f
+
     /**
      * 외부(MainActivity)에서 호출하는 진입점 함수.
-     * 원본 비트맵을 받아서 목표 크기로 리사이즈 후 선택된 알고리즘으로 변환합니다.
+     * 원본 비트맵을 받아서 목표 크기로 리사이즈 -> 명암비/채도 보정 ->
+     * 선화 강조 -> 선택된 알고리즘으로 6색 양자화, 순서로 변환합니다.
      *
      * @param source 원본 이미지 (갤러리에서 선택했거나, 손가락으로 크롭한 영역)
      * @param targetWidth 배지의 가로 픽셀 수
@@ -58,10 +73,106 @@ object ImageProcessor {
         // 마지막 true 파라미터는 "필터링을 써서 부드럽게 리사이즈" 옵션
         val resized = Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
 
+        // 6색 팔레트로 매핑하기 전 필수 전처리 두 단계
+        val contrastBoosted = enhanceContrastAndSaturation(resized, CONTRAST_BOOST, SATURATION_BOOST)
+        val edgeEnhanced = emphasizeEdges(contrastBoosted, EDGE_EMPHASIS_STRENGTH)
+
         return when (algorithm) {
-            Algorithm.COLOR_GRADING -> colorGrading(resized)
-            Algorithm.DITHER -> floydSteinberg(resized, cleanThreshold)
+            Algorithm.COLOR_GRADING -> colorGrading(edgeEnhanced)
+            Algorithm.DITHER -> floydSteinberg(edgeEnhanced, cleanThreshold)
+            Algorithm.ATKINSON -> atkinson(edgeEnhanced)
         }
+    }
+
+    /**
+     * 명암비(contrast)와 채도(saturation)를 동시에 끌어올립니다.
+     *
+     * 명암비: 각 색 채널 값을 중간값(128)에서 더 멀리 벌려줍니다. 128보다
+     * 밝은 값은 더 밝게, 어두운 값은 더 어둡게 만들어서 톤 사이 구분을
+     * 뚜렷하게 만듭니다. (그래야 6색으로 나눌 때 경계가 명확해짐)
+     *
+     * 채도: RGB를 HSV(색상/채도/명도)로 바꾼 뒤 채도(S) 값만 끌어올리고
+     * 다시 RGB로 되돌립니다. 색이 흐릿하게 섞여 보이는 걸 방지합니다.
+     */
+    private fun enhanceContrastAndSaturation(bitmap: Bitmap, contrastFactor: Float, saturationFactor: Float): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        val hsv = FloatArray(3)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+
+            // 1) 명암비: 128을 기준으로 벌려줌
+            var r = ((Color.red(p) - 128f) * contrastFactor + 128f).coerceIn(0f, 255f).toInt()
+            var g = ((Color.green(p) - 128f) * contrastFactor + 128f).coerceIn(0f, 255f).toInt()
+            var b = ((Color.blue(p) - 128f) * contrastFactor + 128f).coerceIn(0f, 255f).toInt()
+
+            // 2) 채도: HSV로 변환해서 S 채널만 끌어올림
+            Color.RGBToHSV(r, g, b, hsv)
+            hsv[1] = (hsv[1] * saturationFactor).coerceIn(0f, 1f)
+            val boosted = Color.HSVToColor(Color.alpha(p), hsv)
+
+            pixels[i] = boosted
+        }
+
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(pixels, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    /**
+     * 선화(윤곽선) 강조. Sobel 연산자로 각 픽셀의 "밝기가 얼마나 급격하게
+     * 바뀌는지"(경계 강도)를 계산하고, 경계가 강한 픽셀일수록 검정 쪽으로
+     * 더 많이 끌어당깁니다. 만화/일러스트처럼 윤곽선이 있는 이미지가 6색
+     * 팔레트로 양자화된 뒤에도 선이 흐릿해지지 않고 살아있게 해줍니다.
+     */
+    private fun emphasizeEdges(bitmap: Bitmap, strength: Float): Bitmap {
+        if (strength <= 0f) return bitmap
+        val w = bitmap.width
+        val h = bitmap.height
+        val src = IntArray(w * h)
+        bitmap.getPixels(src, 0, w, 0, 0, w, h)
+
+        // 밝기(휘도)만 뽑아서 경계 계산에 사용 (색상 자체는 안 건드림)
+        val gray = IntArray(w * h) { i ->
+            val p = src[i]
+            (Color.red(p) * 299 + Color.green(p) * 587 + Color.blue(p) * 114) / 1000
+        }
+
+        fun grayAt(x: Int, y: Int): Int {
+            val cx = x.coerceIn(0, w - 1)
+            val cy = y.coerceIn(0, h - 1)
+            return gray[cy * w + cx]
+        }
+
+        val out = IntArray(w * h)
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val idx = y * w + x
+
+                // Sobel 연산자: 가로/세로 방향 각각의 밝기 변화율(기울기)을 계산
+                val gx = -grayAt(x - 1, y - 1) - 2 * grayAt(x - 1, y) - grayAt(x - 1, y + 1) +
+                    grayAt(x + 1, y - 1) + 2 * grayAt(x + 1, y) + grayAt(x + 1, y + 1)
+                val gy = -grayAt(x - 1, y - 1) - 2 * grayAt(x, y - 1) - grayAt(x + 1, y - 1) +
+                    grayAt(x - 1, y + 1) + 2 * grayAt(x, y + 1) + grayAt(x + 1, y + 1)
+                val magnitude = sqrt((gx.toDouble() * gx + gy.toDouble() * gy)).toFloat()
+
+                // 경계 강도(0~1)에 strength를 곱해서, 얼마나 검정 쪽으로 당길지 비율을 정함
+                val edgeFactor = (magnitude / 255f).coerceIn(0f, 1f) * strength
+
+                val p = src[idx]
+                val r = (Color.red(p) * (1f - edgeFactor)).toInt().coerceIn(0, 255)
+                val g = (Color.green(p) * (1f - edgeFactor)).toInt().coerceIn(0, 255)
+                val b = (Color.blue(p) * (1f - edgeFactor)).toInt().coerceIn(0, 255)
+                out[idx] = Color.rgb(r, g, b)
+            }
+        }
+
+        val outBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        outBmp.setPixels(out, 0, w, 0, 0, w, h)
+        return outBmp
     }
 
     /**
@@ -72,17 +183,11 @@ object ImageProcessor {
     private fun colorGrading(bitmap: Bitmap): Bitmap {
         val w = bitmap.width
         val h = bitmap.height
-
-        // 결과물을 담을 새 비트맵 생성 (원본과 같은 크기)
-        // ARGB_8888: 픽셀 하나당 Alpha(투명도), R, G, B를 각각 8비트(256단계)로 표현하는 가장 흔한 포맷
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
 
-        // 이중 for문으로 모든 픽셀(x, y)을 하나씩 방문
         for (y in 0 until h) {
             for (x in 0 until w) {
-                // 원본 이미지의 (x,y) 픽셀 색상을 가져와서, 팔레트에서 가장 가까운 색을 찾음
                 val matched = ColorPalette.nearestColor(bitmap.getPixel(x, y))
-                // 결과 이미지의 같은 위치에 그 색을 칠함
                 out.setPixel(x, y, matched.rgb)
             }
         }
@@ -112,8 +217,6 @@ object ImageProcessor {
         val w = bitmap.width
         val h = bitmap.height
 
-        // getPixel()을 픽셀마다 개별 호출하면(특히 슬라이더로 실시간 재계산할 때)
-        // 눈에 띄게 느려서, getPixels()로 한 번에 배열로 읽어옵니다.
         val srcPixels = IntArray(w * h)
         bitmap.getPixels(srcPixels, 0, w, 0, 0, w, h)
 
@@ -127,28 +230,20 @@ object ImageProcessor {
         for (y in 0 until h) {
             for (x in 0 until w) {
                 val idx = y * w + x
-                // 지금까지 누적된 오차가 반영된 현재 픽셀의 "실제" 색
                 val oldPixel = Color.rgb(clamp(r[idx]), clamp(g[idx]), clamp(b[idx]))
 
-                // 팔레트에서 가장 가까운 색 찾기
                 val matched = ColorPalette.nearestColor(oldPixel)
                 outPixels[idx] = matched.rgb
 
-                // 원래 색과 선택된 팔레트 색의 차이 = 오차
                 var errR = Color.red(oldPixel) - Color.red(matched.rgb)
                 var errG = Color.green(oldPixel) - Color.green(matched.rgb)
                 var errB = Color.blue(oldPixel) - Color.blue(matched.rgb)
 
-                // 오차 크기(유클리드 거리의 제곱)가 기준보다 작으면 "이미 충분히
-                // 비슷한 색"으로 보고 확산을 생략 (0으로 만듦) -> 잔노이즈 방지.
-                // noiseThreshold가 0이면 이 조건은 사실상 절대 참이 되지 않으므로
-                // (완전히 색이 일치하는 경우 제외) 순수 Floyd-Steinberg와 동일해짐.
                 val errDistSq = errR * errR + errG * errG + errB * errB
                 if (errDistSq <= noiseThreshold) {
                     errR = 0; errG = 0; errB = 0
                 }
 
-                // 오차를 아직 처리되지 않은 이웃 픽셀 4곳에 정해진 비율로 나눠줍니다.
                 if (x + 1 < w) {
                     val i = idx + 1
                     r[i] += errR * 7 / 16; g[i] += errG * 7 / 16; b[i] += errB * 7 / 16
@@ -166,6 +261,67 @@ object ImageProcessor {
                     }
                 }
                 // 7/16 + 3/16 + 5/16 + 1/16 = 16/16 = 1 (오차 100%가 정확히 분배됨)
+            }
+        }
+
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        out.setPixels(outPixels, 0, w, 0, 0, w, h)
+        return out
+    }
+
+    /**
+     * Atkinson 디더링 방식.
+     *
+     * Bill Atkinson(초기 매킨토시 개발자)이 만든 방식으로, Floyd-Steinberg와
+     * 비슷하지만 오차를 6개 이웃에게 1/8씩(총 6/8 = 3/4)만 나눠주고 나머지
+     * 1/4은 그냥 버립니다. 오차를 덜 퍼뜨리기 때문에 Floyd-Steinberg보다
+     * 대비가 강하고 또렷하며, 만화/선화 이미지 특유의 깔끔한 느낌이 잘 삽니다.
+     *
+     *                현재픽셀   오른쪽(1/8)   오른쪽+1(1/8)
+     *  왼쪽아래(1/8)   아래(1/8)   오른쪽아래(1/8)
+     *                아래+1(1/8)
+     */
+    private fun atkinson(bitmap: Bitmap): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+
+        val srcPixels = IntArray(w * h)
+        bitmap.getPixels(srcPixels, 0, w, 0, 0, w, h)
+
+        val r = IntArray(w * h) { i -> Color.red(srcPixels[i]) }
+        val g = IntArray(w * h) { i -> Color.green(srcPixels[i]) }
+        val b = IntArray(w * h) { i -> Color.blue(srcPixels[i]) }
+        val outPixels = IntArray(w * h)
+
+        fun clamp(v: Int) = v.coerceIn(0, 255)
+
+        // 오차 1/8씩을 더해줄 6개 이웃의 상대 좌표
+        val neighbors = arrayOf(
+            1 to 0, 2 to 0,       // 오른쪽, 오른쪽+1
+            -1 to 1, 0 to 1, 1 to 1, // 왼쪽아래, 아래, 오른쪽아래
+            0 to 2                 // 아래+1
+        )
+
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val idx = y * w + x
+                val oldPixel = Color.rgb(clamp(r[idx]), clamp(g[idx]), clamp(b[idx]))
+
+                val matched = ColorPalette.nearestColor(oldPixel)
+                outPixels[idx] = matched.rgb
+
+                val errR = (Color.red(oldPixel) - Color.red(matched.rgb)) / 8
+                val errG = (Color.green(oldPixel) - Color.green(matched.rgb)) / 8
+                val errB = (Color.blue(oldPixel) - Color.blue(matched.rgb)) / 8
+
+                for ((dx, dy) in neighbors) {
+                    val nx = x + dx
+                    val ny = y + dy
+                    if (nx in 0 until w && ny in 0 until h) {
+                        val i = ny * w + nx
+                        r[i] += errR; g[i] += errG; b[i] += errB
+                    }
+                }
             }
         }
 

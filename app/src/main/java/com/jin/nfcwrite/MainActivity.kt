@@ -440,6 +440,13 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 schedulePreviewUpdate()
             }
         }
+        val atkinsonButton = Button(this).apply {
+            text = "Atkinson"
+            setOnClickListener {
+                currentAlgorithm = ImageProcessor.Algorithm.ATKINSON
+                schedulePreviewUpdate()
+            }
+        }
         val cgButton = Button(this).apply {
             text = "컬러 그레이딩"
             setOnClickListener {
@@ -448,6 +455,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             }
         }
         algoRow.addView(ditherButton)
+        algoRow.addView(atkinsonButton)
         algoRow.addView(cgButton)
         root.addView(algoRow)
 
