@@ -42,12 +42,11 @@ object ImageProcessor {
     const val CLEAN_THRESHOLD_MIN = 0
     const val CLEAN_THRESHOLD_MAX = 20000
 
-    // 팔레트 매핑 전 명암비/채도를 얼마나 올릴지 (1.175 = 17.5% 상승, 요청 범위 15~20% 중간값)
-    private const val CONTRAST_BOOST = 1.175f
-    private const val SATURATION_BOOST = 1.175f
-
-    // 선화(윤곽선) 강조 강도 (0=끔, 1=최대). 엣지가 강한 픽셀을 이 비율만큼 검정 쪽으로 당김
-    private const val EDGE_EMPHASIS_STRENGTH = 0.45f
+    // 아래 세 값은 이제 고정 상수가 아니라 process() 호출 시 인자로 전달받습니다
+    // (사용자가 버튼으로 직접 조절할 수 있도록). 여기 있는 값들은 그 기본값입니다.
+    const val DEFAULT_CONTRAST_BOOST = 1.175f
+    const val DEFAULT_SATURATION_BOOST = 1.175f
+    const val DEFAULT_EDGE_STRENGTH = 0.2f // 기존 0.45는 너무 강하다는 피드백으로 낮춤
 
     /**
      * 외부(MainActivity)에서 호출하는 진입점 함수.
@@ -61,21 +60,27 @@ object ImageProcessor {
      * @param cleanThreshold DITHER일 때 노이즈 억제 강도
      *        (CLEAN_THRESHOLD_MIN ~ CLEAN_THRESHOLD_MAX 범위, 슬라이더 값.
      *        0이면 순수 Floyd-Steinberg와 동일)
+     * @param contrastBoost 명암비 배율 (1.0 = 보정 없음)
+     * @param saturationBoost 채도 배율 (1.0 = 보정 없음)
+     * @param edgeStrength 선화 강조 강도 (0.0 = 끔, 1.0 = 최대)
      */
     fun process(
         source: Bitmap,
         targetWidth: Int,
         targetHeight: Int,
         algorithm: Algorithm,
-        cleanThreshold: Int = CLEAN_THRESHOLD_MIN
+        cleanThreshold: Int = CLEAN_THRESHOLD_MIN,
+        contrastBoost: Float = DEFAULT_CONTRAST_BOOST,
+        saturationBoost: Float = DEFAULT_SATURATION_BOOST,
+        edgeStrength: Float = DEFAULT_EDGE_STRENGTH
     ): Bitmap {
         // Bitmap.createScaledBitmap: 이미지를 원하는 크기로 늘리거나 줄임
         // 마지막 true 파라미터는 "필터링을 써서 부드럽게 리사이즈" 옵션
         val resized = Bitmap.createScaledBitmap(source, targetWidth, targetHeight, true)
 
         // 6색 팔레트로 매핑하기 전 필수 전처리 두 단계
-        val contrastBoosted = enhanceContrastAndSaturation(resized, CONTRAST_BOOST, SATURATION_BOOST)
-        val edgeEnhanced = emphasizeEdges(contrastBoosted, EDGE_EMPHASIS_STRENGTH)
+        val contrastBoosted = enhanceContrastAndSaturation(resized, contrastBoost, saturationBoost)
+        val edgeEnhanced = emphasizeEdges(contrastBoosted, edgeStrength)
 
         return when (algorithm) {
             Algorithm.COLOR_GRADING -> colorGrading(edgeEnhanced)

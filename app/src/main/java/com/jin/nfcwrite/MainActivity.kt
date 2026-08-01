@@ -82,6 +82,9 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     private var processedBitmap: Bitmap? = null  // (현재 크롭+알고리즘 기준) 6색 변환이 끝난 결과 이미지
     private var currentAlgorithm = ImageProcessor.Algorithm.DITHER // 기본 알고리즘
     private var currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN // 노이즈 감소 디더링 강도(슬라이더 값)
+    private var currentContrastBoost = ImageProcessor.DEFAULT_CONTRAST_BOOST // 명암비 배율
+    private var currentSaturationBoost = ImageProcessor.DEFAULT_SATURATION_BOOST // 채도 배율
+    private var currentEdgeStrength = ImageProcessor.DEFAULT_EDGE_STRENGTH // 선화 강조 강도
 
     // 메인 화면에 보여지는 틀의 가로 픽셀 크기 (실제 화면 픽셀 기준, dp 아님).
     // 세로는 항상 targetWidth:targetHeight 비율(2:3)에 맞춰 자동으로 계산됨.
@@ -369,7 +372,10 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         // Dispatchers.Default: CPU 연산이 많은 작업(이미지 픽셀 처리)에
         // 적합한 스레드 풀. IO와는 성격이 달라서 구분해서 씁니다.
         CoroutineScope(Dispatchers.Default).launch {
-            val result = ImageProcessor.process(cropped, targetWidth, targetHeight, currentAlgorithm, currentCleanThreshold)
+            val result = ImageProcessor.process(
+                cropped, targetWidth, targetHeight, currentAlgorithm, currentCleanThreshold,
+                currentContrastBoost, currentSaturationBoost, currentEdgeStrength
+            )
             withContext(Dispatchers.Main) {
                 processedBitmap = result
                 zoomImageView?.showProcessedPreview(result)
@@ -582,6 +588,62 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         cleanSliderRow.addView(cleanSeekBar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         cleanSliderRow.addView(cleanPlusButton)
         root.addView(cleanSliderRow)
+
+        // --- 명암비/채도/선화강조 조절 줄 (공통 -/+ 조절 UI를 헬퍼로 재사용) ---
+        // getValue/setValue로 어떤 값을 조절할지 받고, 버튼을 누르면 그 값을
+        // step만큼 바꾼 뒤 라벨 갱신 + 미리보기 재계산까지 한 번에 처리합니다.
+        fun buildAdjustRow(label: String, getValue: () -> Float, setValue: (Float) -> Unit, step: Float, min: Float, max: Float): LinearLayout {
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(20, 0, 20, 10)
+            }
+            lateinit var valueLabel: TextView
+            fun currentText() = "$label ${(getValue() * 100).toInt()}%"
+            valueLabel = TextView(this).apply {
+                text = currentText()
+                textSize = 14f
+            }
+            val minusBtn = Button(this).apply {
+                text = "−"
+                setOnClickListener {
+                    setValue((getValue() - step).coerceIn(min, max))
+                    valueLabel.text = currentText()
+                    schedulePreviewUpdate()
+                }
+            }
+            val plusBtn = Button(this).apply {
+                text = "+"
+                setOnClickListener {
+                    setValue((getValue() + step).coerceIn(min, max))
+                    valueLabel.text = currentText()
+                    schedulePreviewUpdate()
+                }
+            }
+            row.addView(valueLabel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            row.addView(minusBtn)
+            row.addView(plusBtn)
+            return row
+        }
+
+        // 명암비/채도: 100% = 보정 없음, 값이 클수록 대비/채도가 강해짐 (2.5%씩 조절)
+        root.addView(buildAdjustRow(
+            "명암비:",
+            { currentContrastBoost }, { currentContrastBoost = it },
+            step = 0.025f, min = 1.0f, max = 2.0f
+        ))
+        root.addView(buildAdjustRow(
+            "채도:",
+            { currentSaturationBoost }, { currentSaturationBoost = it },
+            step = 0.025f, min = 1.0f, max = 2.0f
+        ))
+        // 선화 강조: 0% = 끔, 100% = 최대. 기본값을 낮춰서(20%) 너무 강하다는
+        // 이전 피드백을 반영했고, 5%씩 세밀하게 조절 가능합니다.
+        root.addView(buildAdjustRow(
+            "선화 강조:",
+            { currentEdgeStrength }, { currentEdgeStrength = it },
+            step = 0.05f, min = 0.0f, max = 1.0f
+        ))
 
         // --- 하단 액션 버튼 줄 ---
         val actionRow = LinearLayout(this).apply {
