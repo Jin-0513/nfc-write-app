@@ -569,18 +569,18 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         root.addView(zoomRow)
 
         // --- 노이즈 감소 강도 슬라이더 ('디더링' 선택 시에만 의미 있음, 0% = 순수 Floyd-Steinberg) ---
-        val cleanLabelRow = LinearLayout(this).apply {
+        // 라벨 + (-)버튼 + 슬라이더 + (+)버튼을 한 줄에 배치해서 세로 공간을 아낍니다.
+        val cleanRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(20, 0, 20, 0)
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(10, 0, 10, 10)
         }
         val cleanValueLabel = TextView(this).apply {
             val percent = ((currentCleanThreshold - ImageProcessor.CLEAN_THRESHOLD_MIN) * 100 /
                 (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN))
-            text = "노이즈 감소 강도: $percent%"
-            textSize = 14f
+            text = "노이즈 감소: $percent%"
+            textSize = 13f
         }
-        cleanLabelRow.addView(cleanValueLabel)
-        root.addView(cleanLabelRow)
 
         // 슬라이더 진행률(0~100)을 실제 임계값에 반영하고 화면을 갱신하는 공용 함수.
         // 슬라이더를 직접 드래그할 때와, -/+ 버튼을 누를 때 모두 이 함수를 통해 처리합니다.
@@ -589,16 +589,11 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             val clamped = progress.coerceIn(0, 100)
             currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN +
                 (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN) * clamped / 100
-            cleanValueLabel.text = "노이즈 감소 강도: $clamped%"
+            cleanValueLabel.text = "노이즈 감소: $clamped%"
             if (cleanSeekBar.progress != clamped) cleanSeekBar.progress = clamped // 버튼으로 바꾼 경우 슬라이더 위치도 동기화
             if (debounceMs > 0) schedulePreviewUpdate(debounceMs) else schedulePreviewUpdate()
         }
 
-        val cleanSliderRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(10, 0, 10, 10)
-        }
         val cleanMinusButton = Button(this).apply {
             text = "−"
             setOnClickListener { applyCleanProgress(cleanSeekBar.progress - 1, 0L) }
@@ -612,7 +607,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                     if (!fromUser) return
                     currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN +
                         (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN) * progress / 100
-                    cleanValueLabel.text = "노이즈 감소 강도: $progress%"
+                    cleanValueLabel.text = "노이즈 감소: $progress%"
                     // 손가락으로 계속 움직이는 동안은 살짝 지연을 둬서 버벅임 없이 실시간처럼 갱신
                     schedulePreviewUpdate(80L)
                 }
@@ -626,33 +621,30 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             text = "+"
             setOnClickListener { applyCleanProgress(cleanSeekBar.progress + 1, 0L) }
         }
-        cleanSliderRow.addView(cleanMinusButton)
-        cleanSliderRow.addView(cleanSeekBar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-        cleanSliderRow.addView(cleanPlusButton)
-        root.addView(cleanSliderRow)
+        cleanRow.addView(cleanValueLabel)
+        cleanRow.addView(cleanMinusButton)
+        cleanRow.addView(cleanSeekBar, LinearLayout.LayoutParams(dp(90), ViewGroup.LayoutParams.WRAP_CONTENT))
+        cleanRow.addView(cleanPlusButton)
+        root.addView(cleanRow)
 
         // --- 명암비/채도/선화강조 조절 (노이즈 감소와 동일하게 슬라이더 + -/+ 버튼 함께 제공) ---
         // 정수(%) 단위로 다뤄서 부동소수점 누적 오차 없이 항상 정확히 step만큼 움직입니다.
         fun buildAdjustBlock(label: String, getValue: () -> Int, setValue: (Int) -> Unit, step: Int, rangeMin: Int, rangeMax: Int): LinearLayout {
-            val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+            // 라벨 + (-)버튼 + 슬라이더 + (+)버튼을 한 줄에 배치해서 세로 공간을 아낍니다.
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(10, 0, 10, 10)
+            }
 
             lateinit var valueLabel: TextView
             lateinit var seekBar: SeekBar
             fun currentText() = "$label ${getValue()}%"
             fun syncSeekBarFromValue() { seekBar.progress = getValue() - rangeMin }
 
-            val labelRow = LinearLayout(this).apply { setPadding(20, 0, 20, 0) }
             valueLabel = TextView(this).apply {
                 text = currentText()
-                textSize = 14f
-            }
-            labelRow.addView(valueLabel)
-            container.addView(labelRow)
-
-            val controlRow = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(10, 0, 10, 10)
+                textSize = 13f
             }
             val minusBtn = Button(this).apply {
                 text = "−"
@@ -690,29 +682,29 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                     schedulePreviewUpdate()
                 }
             }
-            controlRow.addView(minusBtn)
-            controlRow.addView(seekBar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            controlRow.addView(plusBtn)
-            container.addView(controlRow)
-            return container
+            row.addView(valueLabel)
+            row.addView(minusBtn)
+            row.addView(seekBar, LinearLayout.LayoutParams(dp(90), ViewGroup.LayoutParams.WRAP_CONTENT))
+            row.addView(plusBtn)
+            return row
         }
 
-        // 명암비/채도: 100% = 보정 없음, 값이 클수록 대비/채도가 강해짐 (2%씩 조절)
+        // 명암비/채도: 100% = 보정 없음, 값이 클수록 대비/채도가 강해짐 (1%씩 조절)
         root.addView(buildAdjustBlock(
             "명암비:",
             { currentContrastPercent }, { currentContrastPercent = it },
-            step = 2, rangeMin = 100, rangeMax = 200
+            step = 1, rangeMin = 100, rangeMax = 200
         ))
         root.addView(buildAdjustBlock(
             "채도:",
             { currentSaturationPercent }, { currentSaturationPercent = it },
-            step = 2, rangeMin = 100, rangeMax = 200
+            step = 1, rangeMin = 100, rangeMax = 200
         ))
-        // 선화 강조: 0% = 끔, 100% = 최대. 2%씩 세밀하게 조절 가능합니다.
+        // 선화 강조: 0% = 끔, 100% = 최대. 1%씩 세밀하게 조절 가능합니다.
         root.addView(buildAdjustBlock(
             "선화 강조:",
             { currentEdgeStrengthPercent }, { currentEdgeStrengthPercent = it },
-            step = 2, rangeMin = 0, rangeMax = 100
+            step = 1, rangeMin = 0, rangeMax = 100
         ))
 
         // --- 하단 액션 버튼 줄 ---
