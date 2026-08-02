@@ -633,13 +633,13 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
         // --- 명암비/채도/선화강조 조절 (노이즈 감소와 동일하게 슬라이더 + -/+ 버튼 함께 제공) ---
         // 정수(%) 단위로 다뤄서 부동소수점 누적 오차 없이 항상 정확히 step만큼 움직입니다.
-        fun buildAdjustBlock(label: String, getValue: () -> Int, setValue: (Int) -> Unit, step: Int, min: Int, max: Int): LinearLayout {
+        fun buildAdjustBlock(label: String, getValue: () -> Int, setValue: (Int) -> Unit, step: Int, rangeMin: Int, rangeMax: Int): LinearLayout {
             val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
             lateinit var valueLabel: TextView
             lateinit var seekBar: SeekBar
             fun currentText() = "$label ${getValue()}%"
-            fun syncSeekBarFromValue() { seekBar.progress = getValue() - min }
+            fun syncSeekBarFromValue() { seekBar.progress = getValue() - rangeMin }
 
             val labelRow = LinearLayout(this).apply { setPadding(20, 0, 20, 0) }
             valueLabel = TextView(this).apply {
@@ -657,19 +657,20 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             val minusBtn = Button(this).apply {
                 text = "−"
                 setOnClickListener {
-                    setValue((getValue() - step).coerceIn(min, max))
+                    setValue((getValue() - step).coerceIn(rangeMin, rangeMax))
                     valueLabel.text = currentText()
                     syncSeekBarFromValue()
                     schedulePreviewUpdate()
                 }
             }
             seekBar = SeekBar(this).apply {
-                max = maxOf(1, max - min) // SeekBar는 0부터 시작하므로, min만큼 오프셋을 빼서 사용
-                progress = (getValue() - min).coerceIn(0, this.max)
+                // SeekBar 자체의 max 속성 이름과 겹치지 않게 rangeMin/rangeMax로 계산
+                max = maxOf(1, rangeMax - rangeMin) // SeekBar는 0부터 시작하므로, rangeMin만큼 오프셋을 빼서 사용
+                progress = (getValue() - rangeMin).coerceIn(0, this.max)
                 setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                     override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
                         if (!fromUser) return
-                        setValue((min + progress).coerceIn(min, max))
+                        setValue((rangeMin + progress).coerceIn(rangeMin, rangeMax))
                         valueLabel.text = currentText()
                         // 손가락으로 계속 움직이는 동안은 살짝 지연을 둬서 버벅임 없이 실시간처럼 갱신
                         schedulePreviewUpdate(80L)
@@ -683,7 +684,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             val plusBtn = Button(this).apply {
                 text = "+"
                 setOnClickListener {
-                    setValue((getValue() + step).coerceIn(min, max))
+                    setValue((getValue() + step).coerceIn(rangeMin, rangeMax))
                     valueLabel.text = currentText()
                     syncSeekBarFromValue()
                     schedulePreviewUpdate()
@@ -700,18 +701,18 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         root.addView(buildAdjustBlock(
             "명암비:",
             { currentContrastPercent }, { currentContrastPercent = it },
-            step = 2, min = 100, max = 200
+            step = 2, rangeMin = 100, rangeMax = 200
         ))
         root.addView(buildAdjustBlock(
             "채도:",
             { currentSaturationPercent }, { currentSaturationPercent = it },
-            step = 2, min = 100, max = 200
+            step = 2, rangeMin = 100, rangeMax = 200
         ))
         // 선화 강조: 0% = 끔, 100% = 최대. 2%씩 세밀하게 조절 가능합니다.
         root.addView(buildAdjustBlock(
             "선화 강조:",
             { currentEdgeStrengthPercent }, { currentEdgeStrengthPercent = it },
-            step = 2, min = 0, max = 100
+            step = 2, rangeMin = 0, rangeMax = 100
         ))
 
         // --- 하단 액션 버튼 줄 ---
