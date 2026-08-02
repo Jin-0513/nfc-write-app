@@ -82,9 +82,12 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     private var processedBitmap: Bitmap? = null  // (현재 크롭+알고리즘 기준) 6색 변환이 끝난 결과 이미지
     private var currentAlgorithm = ImageProcessor.Algorithm.DITHER // 기본 알고리즘
     private var currentCleanThreshold = ImageProcessor.CLEAN_THRESHOLD_MIN // 노이즈 감소 디더링 강도(슬라이더 값)
-    private var currentContrastBoost = ImageProcessor.DEFAULT_CONTRAST_BOOST // 명암비 배율
-    private var currentSaturationBoost = ImageProcessor.DEFAULT_SATURATION_BOOST // 채도 배율
-    private var currentEdgeStrength = ImageProcessor.DEFAULT_EDGE_STRENGTH // 선화 강조 강도
+    // 부동소수점(Float)으로 2%씩 누적해서 더하면 반올림 오차가 쌓여서
+    // (예: 1.04 + 0.02가 정확히 1.06이 안 되고 1.0599999...가 되는 식)
+    // 표시되는 %가 어긋나는 문제가 있어서, 정수 퍼센트로 저장하도록 변경했습니다.
+    private var currentContrastPercent = 120 // 명암비 (100 = 보정 없음)
+    private var currentSaturationPercent = 120 // 채도 (100 = 보정 없음)
+    private var currentEdgeStrengthPercent = (ImageProcessor.DEFAULT_EDGE_STRENGTH * 100).toInt() // 선화 강조 (0~100)
 
     // 메인 화면에 보여지는 틀의 가로 픽셀 크기 (실제 화면 픽셀 기준, dp 아님).
     // 세로는 항상 targetWidth:targetHeight 비율(2:3)에 맞춰 자동으로 계산됨.
@@ -374,7 +377,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         CoroutineScope(Dispatchers.Default).launch {
             val result = ImageProcessor.process(
                 cropped, targetWidth, targetHeight, currentAlgorithm, currentCleanThreshold,
-                currentContrastBoost, currentSaturationBoost, currentEdgeStrength
+                currentContrastPercent / 100f, currentSaturationPercent / 100f, currentEdgeStrengthPercent / 100f
             )
             withContext(Dispatchers.Main) {
                 processedBitmap = result
@@ -590,16 +593,15 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         root.addView(cleanSliderRow)
 
         // --- 명암비/채도/선화강조 조절 줄 (공통 -/+ 조절 UI를 헬퍼로 재사용) ---
-        // getValue/setValue로 어떤 값을 조절할지 받고, 버튼을 누르면 그 값을
-        // step만큼 바꾼 뒤 라벨 갱신 + 미리보기 재계산까지 한 번에 처리합니다.
-        fun buildAdjustRow(label: String, getValue: () -> Float, setValue: (Float) -> Unit, step: Float, min: Float, max: Float): LinearLayout {
+        // 정수(%) 단위로 다뤄서 부동소수점 누적 오차 없이 항상 정확히 step만큼 움직입니다.
+        fun buildAdjustRow(label: String, getValue: () -> Int, setValue: (Int) -> Unit, step: Int, min: Int, max: Int): LinearLayout {
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
                 setPadding(20, 0, 20, 10)
             }
             lateinit var valueLabel: TextView
-            fun currentText() = "$label ${(getValue() * 100).toInt()}%"
+            fun currentText() = "$label ${getValue()}%"
             valueLabel = TextView(this).apply {
                 text = currentText()
                 textSize = 14f
@@ -629,19 +631,19 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         // 명암비/채도: 100% = 보정 없음, 값이 클수록 대비/채도가 강해짐 (2%씩 조절)
         root.addView(buildAdjustRow(
             "명암비:",
-            { currentContrastBoost }, { currentContrastBoost = it },
-            step = 0.02f, min = 1.0f, max = 2.0f
+            { currentContrastPercent }, { currentContrastPercent = it },
+            step = 2, min = 100, max = 200
         ))
         root.addView(buildAdjustRow(
             "채도:",
-            { currentSaturationBoost }, { currentSaturationBoost = it },
-            step = 0.02f, min = 1.0f, max = 2.0f
+            { currentSaturationPercent }, { currentSaturationPercent = it },
+            step = 2, min = 100, max = 200
         ))
         // 선화 강조: 0% = 끔, 100% = 최대. 2%씩 세밀하게 조절 가능합니다.
         root.addView(buildAdjustRow(
             "선화 강조:",
-            { currentEdgeStrength }, { currentEdgeStrength = it },
-            step = 0.02f, min = 0.0f, max = 1.0f
+            { currentEdgeStrengthPercent }, { currentEdgeStrengthPercent = it },
+            step = 2, min = 0, max = 100
         ))
 
         // --- 하단 액션 버튼 줄 ---
