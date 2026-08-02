@@ -419,10 +419,49 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         frame.addView(zoomImageView, FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
         ))
-        // 화면을 다 채우지 않고 폭을 줄여서, 아래 버튼들이 잘리지 않게 함.
-        // dp가 아니라 실제 화면 픽셀(frameWidthPx) 그대로 사용합니다.
-        root.addView(frame, LinearLayout.LayoutParams(frameWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
-            gravity = Gravity.CENTER_HORIZONTAL
+        // --- 틀 + 좌우/상하 이동 버튼 ---
+        // 손가락으로는 세밀한 조정이 어려워서, 버튼으로 4px씩 정확하게
+        // 이동시킬 수 있게 틀 양옆에 이동 버튼을 둡니다.
+        // 왼쪽: 좌/우 이동, 오른쪽: 상/하 이동
+        val panStepPx = 4f
+        val leftPanColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+        }
+        val panLeftButton = Button(this).apply {
+            text = "◀"
+            setOnClickListener { zoomImageView?.panBy(-panStepPx, 0f) }
+        }
+        val panRightButton = Button(this).apply {
+            text = "▶"
+            setOnClickListener { zoomImageView?.panBy(panStepPx, 0f) }
+        }
+        leftPanColumn.addView(panLeftButton)
+        leftPanColumn.addView(panRightButton)
+
+        val rightPanColumn = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+        }
+        val panUpButton = Button(this).apply {
+            text = "▲"
+            setOnClickListener { zoomImageView?.panBy(0f, -panStepPx) }
+        }
+        val panDownButton = Button(this).apply {
+            text = "▼"
+            setOnClickListener { zoomImageView?.panBy(0f, panStepPx) }
+        }
+        rightPanColumn.addView(panUpButton)
+        rightPanColumn.addView(panDownButton)
+
+        val frameWithPanRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+        }
+        frameWithPanRow.addView(leftPanColumn)
+        frameWithPanRow.addView(frame, LinearLayout.LayoutParams(frameWidthPx, ViewGroup.LayoutParams.WRAP_CONTENT))
+        frameWithPanRow.addView(rightPanColumn)
+        root.addView(frameWithPanRow, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply {
             topMargin = dp(12)
             bottomMargin = dp(12)
         })
@@ -592,55 +631,84 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         cleanSliderRow.addView(cleanPlusButton)
         root.addView(cleanSliderRow)
 
-        // --- 명암비/채도/선화강조 조절 줄 (공통 -/+ 조절 UI를 헬퍼로 재사용) ---
+        // --- 명암비/채도/선화강조 조절 (노이즈 감소와 동일하게 슬라이더 + -/+ 버튼 함께 제공) ---
         // 정수(%) 단위로 다뤄서 부동소수점 누적 오차 없이 항상 정확히 step만큼 움직입니다.
-        fun buildAdjustRow(label: String, getValue: () -> Int, setValue: (Int) -> Unit, step: Int, min: Int, max: Int): LinearLayout {
-            val row = LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                setPadding(20, 0, 20, 10)
-            }
+        fun buildAdjustBlock(label: String, getValue: () -> Int, setValue: (Int) -> Unit, step: Int, min: Int, max: Int): LinearLayout {
+            val container = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
             lateinit var valueLabel: TextView
+            lateinit var seekBar: SeekBar
             fun currentText() = "$label ${getValue()}%"
+            fun syncSeekBarFromValue() { seekBar.progress = getValue() - min }
+
+            val labelRow = LinearLayout(this).apply { setPadding(20, 0, 20, 0) }
             valueLabel = TextView(this).apply {
                 text = currentText()
                 textSize = 14f
+            }
+            labelRow.addView(valueLabel)
+            container.addView(labelRow)
+
+            val controlRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(10, 0, 10, 10)
             }
             val minusBtn = Button(this).apply {
                 text = "−"
                 setOnClickListener {
                     setValue((getValue() - step).coerceIn(min, max))
                     valueLabel.text = currentText()
+                    syncSeekBarFromValue()
                     schedulePreviewUpdate()
                 }
+            }
+            seekBar = SeekBar(this).apply {
+                max = maxOf(1, max - min) // SeekBar는 0부터 시작하므로, min만큼 오프셋을 빼서 사용
+                progress = (getValue() - min).coerceIn(0, this.max)
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                        if (!fromUser) return
+                        setValue((min + progress).coerceIn(min, max))
+                        valueLabel.text = currentText()
+                        // 손가락으로 계속 움직이는 동안은 살짝 지연을 둬서 버벅임 없이 실시간처럼 갱신
+                        schedulePreviewUpdate(80L)
+                    }
+                    override fun onStartTrackingTouch(sb: SeekBar) {}
+                    override fun onStopTrackingTouch(sb: SeekBar) {
+                        schedulePreviewUpdate() // 손을 뗀 순간엔 지연 없이 바로 최종 반영
+                    }
+                })
             }
             val plusBtn = Button(this).apply {
                 text = "+"
                 setOnClickListener {
                     setValue((getValue() + step).coerceIn(min, max))
                     valueLabel.text = currentText()
+                    syncSeekBarFromValue()
                     schedulePreviewUpdate()
                 }
             }
-            row.addView(valueLabel, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
-            row.addView(minusBtn)
-            row.addView(plusBtn)
-            return row
+            controlRow.addView(minusBtn)
+            controlRow.addView(seekBar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            controlRow.addView(plusBtn)
+            container.addView(controlRow)
+            return container
         }
 
         // 명암비/채도: 100% = 보정 없음, 값이 클수록 대비/채도가 강해짐 (2%씩 조절)
-        root.addView(buildAdjustRow(
+        root.addView(buildAdjustBlock(
             "명암비:",
             { currentContrastPercent }, { currentContrastPercent = it },
             step = 2, min = 100, max = 200
         ))
-        root.addView(buildAdjustRow(
+        root.addView(buildAdjustBlock(
             "채도:",
             { currentSaturationPercent }, { currentSaturationPercent = it },
             step = 2, min = 100, max = 200
         ))
         // 선화 강조: 0% = 끔, 100% = 최대. 2%씩 세밀하게 조절 가능합니다.
-        root.addView(buildAdjustRow(
+        root.addView(buildAdjustBlock(
             "선화 강조:",
             { currentEdgeStrengthPercent }, { currentEdgeStrengthPercent = it },
             step = 2, min = 0, max = 100

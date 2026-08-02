@@ -300,6 +300,20 @@ class ZoomableImageView @JvmOverloads constructor(
     }
 
     /**
+     * 버튼으로 미세하게 이동(팬)할 때 사용합니다. 손가락 드래그와 동일한
+     * 원리로, 지정한 만큼(화면 픽셀 단위) 이미지를 이동시킵니다.
+     * 손가락으로 세밀하게 조절하기 어려울 때, 원하는 방향으로 정확히
+     * 몇 픽셀씩 이동시키고 싶을 때 씁니다.
+     */
+    fun panBy(dx: Float, dy: Float) {
+        returnToEditModeIfNeeded() // 결과 미리보기 중이었다면 먼저 편집 모드로
+        imgMatrix.postTranslate(dx, dy)
+        clampMatrix() // 틀 밖으로 빈 공간이 생기지 않게 보정
+        imageMatrix = imgMatrix
+        onTransformSettled?.invoke()
+    }
+
+    /**
      * 지금 화면(틀)에 실제로 보이는 영역을, 편집용 원본 이미지의 픽셀
      * 좌표계로 환산해서 돌려줍니다. "쓰기"를 누를 때 이 사각형만큼만
      * 원본에서 잘라내서(crop) 배지에 씁니다. 즉 손가락으로 확대/이동한
