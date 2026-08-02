@@ -580,6 +580,8 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                 (ImageProcessor.CLEAN_THRESHOLD_MAX - ImageProcessor.CLEAN_THRESHOLD_MIN))
             text = "노이즈 감소: $percent%"
             textSize = 13f
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
         }
 
         // 슬라이더 진행률(0~100)을 실제 임계값에 반영하고 화면을 갱신하는 공용 함수.
@@ -621,9 +623,9 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             text = "+"
             setOnClickListener { applyCleanProgress(cleanSeekBar.progress + 1, 0L) }
         }
-        cleanRow.addView(cleanValueLabel)
+        cleanRow.addView(cleanValueLabel, LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT))
         cleanRow.addView(cleanMinusButton)
-        cleanRow.addView(cleanSeekBar, LinearLayout.LayoutParams(dp(90), ViewGroup.LayoutParams.WRAP_CONTENT))
+        cleanRow.addView(cleanSeekBar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         cleanRow.addView(cleanPlusButton)
         root.addView(cleanRow)
 
@@ -645,6 +647,8 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             valueLabel = TextView(this).apply {
                 text = currentText()
                 textSize = 13f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
             }
             val minusBtn = Button(this).apply {
                 text = "−"
@@ -682,9 +686,9 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
                     schedulePreviewUpdate()
                 }
             }
-            row.addView(valueLabel)
+            row.addView(valueLabel, LinearLayout.LayoutParams(dp(100), ViewGroup.LayoutParams.WRAP_CONTENT))
             row.addView(minusBtn)
-            row.addView(seekBar, LinearLayout.LayoutParams(dp(90), ViewGroup.LayoutParams.WRAP_CONTENT))
+            row.addView(seekBar, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
             row.addView(plusBtn)
             return row
         }
