@@ -626,23 +626,22 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             return row
         }
 
-        // 명암비/채도: 100% = 보정 없음, 값이 클수록 대비/채도가 강해짐 (2.5%씩 조절)
+        // 명암비/채도: 100% = 보정 없음, 값이 클수록 대비/채도가 강해짐 (2%씩 조절)
         root.addView(buildAdjustRow(
             "명암비:",
             { currentContrastBoost }, { currentContrastBoost = it },
-            step = 0.025f, min = 1.0f, max = 2.0f
+            step = 0.02f, min = 1.0f, max = 2.0f
         ))
         root.addView(buildAdjustRow(
             "채도:",
             { currentSaturationBoost }, { currentSaturationBoost = it },
-            step = 0.025f, min = 1.0f, max = 2.0f
+            step = 0.02f, min = 1.0f, max = 2.0f
         ))
-        // 선화 강조: 0% = 끔, 100% = 최대. 기본값을 낮춰서(20%) 너무 강하다는
-        // 이전 피드백을 반영했고, 5%씩 세밀하게 조절 가능합니다.
+        // 선화 강조: 0% = 끔, 100% = 최대. 2%씩 세밀하게 조절 가능합니다.
         root.addView(buildAdjustRow(
             "선화 강조:",
             { currentEdgeStrength }, { currentEdgeStrength = it },
-            step = 0.05f, min = 0.0f, max = 1.0f
+            step = 0.02f, min = 0.0f, max = 1.0f
         ))
 
         // --- 하단 액션 버튼 줄 ---
