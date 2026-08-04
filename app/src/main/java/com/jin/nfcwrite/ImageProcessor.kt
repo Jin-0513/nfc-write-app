@@ -382,7 +382,10 @@ object ImageProcessor {
             }
         }
         return if (totalCount > 0) diffCount * 100f / totalCount else 0f
-    } 이미지를 blockSize x blockSize 크기의 정사각형
+    }
+
+    /**
+     * 블록화(blockify). 이미지를 blockSize x blockSize 크기의 정사각형
      * 블록으로 나누고, 각 블록 안의 모든 픽셀을 그 블록의 평균색으로
      * 통일시킵니다. 이렇게 하면 그 다음 단계(디더링)에서 "블록 하나 = 원래
      * 색 하나"로 취급되기 때문에, 블록 내부에서는 디더링이 일어나지 않고
