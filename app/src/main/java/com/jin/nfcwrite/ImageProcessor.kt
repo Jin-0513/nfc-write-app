@@ -51,7 +51,8 @@ object ImageProcessor {
     /**
      * 외부(MainActivity)에서 호출하는 진입점 함수.
      * 원본 비트맵을 받아서 목표 크기로 리사이즈 -> 명암비/채도 보정 ->
-     * 선화 강조 -> 선택된 알고리즘으로 6색 양자화, 순서로 변환합니다.
+     * 선화 강조 -> (옵션) 블록화 -> 선택된 알고리즘으로 6색 양자화 ->
+     * (옵션) 잡티 제거, 순서로 변환합니다.
      *
      * @param source 원본 이미지 (갤러리에서 선택했거나, 손가락으로 크롭한 영역)
      * @param targetWidth 배지의 가로 픽셀 수
@@ -63,6 +64,10 @@ object ImageProcessor {
      * @param contrastBoost 명암비 배율 (1.0 = 보정 없음)
      * @param saturationBoost 채도 배율 (1.0 = 보정 없음)
      * @param edgeStrength 선화 강조 강도 (0.0 = 끔, 1.0 = 최대)
+     * @param useBlockDither 켜면, 양자화 직전에 2x2 블록 단위로 색을 뭉뚱그려서
+     *        블록 내부에서는 색이 안 바뀌게 만듭니다 (색 전환 밀도를 크게 낮춤)
+     * @param useDespeckle 켜면, 양자화가 끝난 결과에서 주변과 색이 다른
+     *        고립된 픽셀(잡티)을 찾아 주변 색으로 정리합니다
      */
     fun process(
         source: Bitmap,
@@ -72,7 +77,9 @@ object ImageProcessor {
         cleanThreshold: Int = CLEAN_THRESHOLD_MIN,
         contrastBoost: Float = DEFAULT_CONTRAST_BOOST,
         saturationBoost: Float = DEFAULT_SATURATION_BOOST,
-        edgeStrength: Float = DEFAULT_EDGE_STRENGTH
+        edgeStrength: Float = DEFAULT_EDGE_STRENGTH,
+        useBlockDither: Boolean = false,
+        useDespeckle: Boolean = false
     ): Bitmap {
         // Bitmap.createScaledBitmap: 이미지를 원하는 크기로 늘리거나 줄임
         // 마지막 true 파라미터는 "필터링을 써서 부드럽게 리사이즈" 옵션
@@ -82,11 +89,19 @@ object ImageProcessor {
         val contrastBoosted = enhanceContrastAndSaturation(resized, contrastBoost, saturationBoost)
         val edgeEnhanced = emphasizeEdges(contrastBoosted, edgeStrength)
 
-        return when (algorithm) {
-            Algorithm.COLOR_GRADING -> colorGrading(edgeEnhanced)
-            Algorithm.DITHER -> floydSteinberg(edgeEnhanced, cleanThreshold)
-            Algorithm.ATKINSON -> atkinson(edgeEnhanced)
+        // (옵션) 블록화: 양자화 직전에 2x2 블록을 평균색으로 뭉개서, 블록
+        // 내부에서는 디더링이 일어나지 않게 만듭니다 (색 전환 밀도 감소)
+        val preQuantized = if (useBlockDither) blockify(edgeEnhanced, 2) else edgeEnhanced
+
+        val quantized = when (algorithm) {
+            Algorithm.COLOR_GRADING -> colorGrading(preQuantized)
+            Algorithm.DITHER -> floydSteinberg(preQuantized, cleanThreshold)
+            Algorithm.ATKINSON -> atkinson(preQuantized)
         }
+
+        // (옵션) 잡티 제거: 양자화가 끝난 뒤, 주변 8개 픽셀과 색이 다른
+        // 고립된 픽셀을 찾아 주변에서 가장 흔한 색으로 바꿔줍니다
+        return if (useDespeckle) despeckle(quantized) else quantized
     }
 
     /**
@@ -333,5 +348,109 @@ object ImageProcessor {
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         out.setPixels(outPixels, 0, w, 0, 0, w, h)
         return out
+    }
+
+    /**
+     * 블록화(blockify). 이미지를 blockSize x blockSize 크기의 정사각형
+     * 블록으로 나누고, 각 블록 안의 모든 픽셀을 그 블록의 평균색으로
+     * 통일시킵니다. 이렇게 하면 그 다음 단계(디더링)에서 "블록 하나 = 원래
+     * 색 하나"로 취급되기 때문에, 블록 내부에서는 디더링이 일어나지 않고
+     * 블록 경계에서만 색이 바뀝니다. 결과적으로 전체 이미지에서 "색이
+     * 바뀌는 픽셀 수"(색 전환 밀도)가 크게 줄어듭니다.
+     *
+     * 시각적으로는 살짝 모자이크(픽셀 아트) 느낌이 나지만, e-ink 화면
+     * 갱신 부담을 줄이는 데는 가장 직접적이고 예측 가능한 방법입니다.
+     */
+    private fun blockify(bitmap: Bitmap, blockSize: Int): Bitmap {
+        if (blockSize <= 1) return bitmap
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        val out = IntArray(w * h)
+
+        var by = 0
+        while (by < h) {
+            val blockH = minOf(blockSize, h - by)
+            var bx = 0
+            while (bx < w) {
+                val blockW = minOf(blockSize, w - bx)
+
+                // 블록 안의 평균색 계산
+                var sumR = 0; var sumG = 0; var sumB = 0
+                for (dy in 0 until blockH) {
+                    for (dx in 0 until blockW) {
+                        val p = pixels[(by + dy) * w + (bx + dx)]
+                        sumR += Color.red(p); sumG += Color.green(p); sumB += Color.blue(p)
+                    }
+                }
+                val count = blockW * blockH
+                val avg = Color.rgb(sumR / count, sumG / count, sumB / count)
+
+                // 블록 안의 모든 픽셀을 그 평균색으로 통일
+                for (dy in 0 until blockH) {
+                    for (dx in 0 until blockW) {
+                        out[(by + dy) * w + (bx + dx)] = avg
+                    }
+                }
+                bx += blockSize
+            }
+            by += blockSize
+        }
+
+        val outBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        outBmp.setPixels(out, 0, w, 0, 0, w, h)
+        return outBmp
+    }
+
+    /**
+     * 잡티 제거(despeckle). 6색으로 이미 양자화된 결과물에서, 주변 8개
+     * 이웃 픽셀 중 자신과 같은 색이 거의 없는(고립된) 픽셀을 찾아서,
+     * 이웃 중 가장 흔한 색으로 바꿔치기합니다.
+     *
+     * 디더링이 자연스럽게 만들어내는 패턴은 대부분 그대로 유지하면서,
+     * 유독 튀는 외딴 픽셀(진짜 "잡티")만 정리하는 후처리라서 부작용이
+     * 적습니다. threshold(자신과 같은 색인 이웃의 최소 개수)보다 적으면
+     * 고립된 것으로 판단합니다.
+     */
+    private fun despeckle(bitmap: Bitmap, minSameNeighbors: Int = 2): Bitmap {
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+        val out = pixels.copyOf()
+
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val idx = y * w + x
+                val self = pixels[idx]
+
+                // 8방향 이웃의 색상별 개수를 셈
+                val counts = HashMap<Int, Int>()
+                var sameCount = 0
+                for (dy in -1..1) {
+                    for (dx in -1..1) {
+                        if (dx == 0 && dy == 0) continue
+                        val nx = x + dx
+                        val ny = y + dy
+                        if (nx !in 0 until w || ny !in 0 until h) continue
+                        val neighborColor = pixels[ny * w + nx]
+                        counts[neighborColor] = (counts[neighborColor] ?: 0) + 1
+                        if (neighborColor == self) sameCount++
+                    }
+                }
+
+                // 자신과 같은 색인 이웃이 기준보다 적으면 "고립된 잡티"로 판단하고
+                // 이웃 중 가장 흔한 색으로 교체
+                if (sameCount < minSameNeighbors) {
+                    val mostCommon = counts.maxByOrNull { it.value }?.key
+                    if (mostCommon != null) out[idx] = mostCommon
+                }
+            }
+        }
+
+        val outBmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        outBmp.setPixels(out, 0, w, 0, 0, w, h)
+        return outBmp
     }
 }

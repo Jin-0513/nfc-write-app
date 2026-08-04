@@ -88,6 +88,8 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     private var currentContrastPercent = 120 // 명암비 (100 = 보정 없음)
     private var currentSaturationPercent = 120 // 채도 (100 = 보정 없음)
     private var currentEdgeStrengthPercent = (ImageProcessor.DEFAULT_EDGE_STRENGTH * 100).toInt() // 선화 강조 (0~100)
+    private var useBlockDither = false // 블록 디더링 on/off
+    private var useDespeckle = false   // 잡티 제거 on/off
 
     // 메인 화면에 보여지는 틀의 가로 픽셀 크기 (실제 화면 픽셀 기준, dp 아님).
     // 세로는 항상 targetWidth:targetHeight 비율(2:3)에 맞춰 자동으로 계산됨.
@@ -377,7 +379,8 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
         CoroutineScope(Dispatchers.Default).launch {
             val result = ImageProcessor.process(
                 cropped, targetWidth, targetHeight, currentAlgorithm, currentCleanThreshold,
-                currentContrastPercent / 100f, currentSaturationPercent / 100f, currentEdgeStrengthPercent / 100f
+                currentContrastPercent / 100f, currentSaturationPercent / 100f, currentEdgeStrengthPercent / 100f,
+                useBlockDither, useDespeckle
             )
             withContext(Dispatchers.Main) {
                 processedBitmap = result
@@ -710,6 +713,36 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             { currentEdgeStrengthPercent }, { currentEdgeStrengthPercent = it },
             step = 1, rangeMin = 0, rangeMax = 100
         ))
+
+        // --- 색 전환 밀도를 낮추는 옵션 두 가지 (켬/끔 토글) ---
+        // 블록 디더링: 2x2 블록 단위로 색을 뭉개서 밀도를 큼직하게 낮춤
+        // 잡티 제거: 양자화 후 고립된 튀는 픽셀만 후처리로 정리
+        val densityRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER
+            setPadding(20, 0, 20, 10)
+        }
+        lateinit var blockDitherButton: Button
+        blockDitherButton = Button(this).apply {
+            text = "블록 디더링: ${if (useBlockDither) "켬" else "끔"}"
+            setOnClickListener {
+                useBlockDither = !useBlockDither
+                blockDitherButton.text = "블록 디더링: ${if (useBlockDither) "켬" else "끔"}"
+                schedulePreviewUpdate()
+            }
+        }
+        lateinit var despeckleButton: Button
+        despeckleButton = Button(this).apply {
+            text = "잡티 제거: ${if (useDespeckle) "켬" else "끔"}"
+            setOnClickListener {
+                useDespeckle = !useDespeckle
+                despeckleButton.text = "잡티 제거: ${if (useDespeckle) "켬" else "끔"}"
+                schedulePreviewUpdate()
+            }
+        }
+        densityRow.addView(blockDitherButton)
+        densityRow.addView(despeckleButton)
+        root.addView(densityRow)
 
         // --- 하단 액션 버튼 줄 ---
         val actionRow = LinearLayout(this).apply {
