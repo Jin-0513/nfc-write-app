@@ -351,7 +351,38 @@ object ImageProcessor {
     }
 
     /**
-     * 블록화(blockify). 이미지를 blockSize x blockSize 크기의 정사각형
+     * 색 전환 밀도(color transition density)를 계산합니다.
+     * 각 픽셀을 오른쪽/아래쪽 이웃과 비교해서, 색이 다른 경우(=전환이
+     * 일어난 경우)의 비율을 %로 돌려줍니다. 값이 낮을수록 넓은 단색
+     * 영역이 많다는 뜻이고, 높을수록 픽셀 단위로 색이 촘촘하게 바뀐다는
+     * 뜻입니다 (e-ink 화면 갱신 실패와 상관관계가 있는 것으로 추정되는 지표).
+     *
+     * 반드시 6색으로 양자화가 끝난 최종 결과 비트맵에 대해 호출해야
+     * 의미 있는 값이 나옵니다 (원본/중간 처리물에 쓰면 무의미).
+     */
+    fun colorTransitionDensity(bitmap: Bitmap): Float {
+        val w = bitmap.width
+        val h = bitmap.height
+        val pixels = IntArray(w * h)
+        bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+
+        var diffCount = 0L
+        var totalCount = 0L
+        for (y in 0 until h) {
+            for (x in 0 until w) {
+                val idx = y * w + x
+                if (x + 1 < w) {
+                    totalCount++
+                    if (pixels[idx] != pixels[idx + 1]) diffCount++
+                }
+                if (y + 1 < h) {
+                    totalCount++
+                    if (pixels[idx] != pixels[idx + w]) diffCount++
+                }
+            }
+        }
+        return if (totalCount > 0) diffCount * 100f / totalCount else 0f
+    } 이미지를 blockSize x blockSize 크기의 정사각형
      * 블록으로 나누고, 각 블록 안의 모든 픽셀을 그 블록의 평균색으로
      * 통일시킵니다. 이렇게 하면 그 다음 단계(디더링)에서 "블록 하나 = 원래
      * 색 하나"로 취급되기 때문에, 블록 내부에서는 디더링이 일어나지 않고

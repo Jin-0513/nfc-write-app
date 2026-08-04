@@ -101,6 +101,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
     private var savedCropRect: RectF? = null
 
     private var zoomImageView: ZoomableImageView? = null      // 편집 화면의 이미지 뷰 (틀 안에서 확대/이동 + 결과 미리보기 겸용)
+    private var densityLabel: TextView? = null                // 색 전환 밀도 표시용
     private var statusText: TextView? = null              // 쓰기 화면의 상태 메시지
 
     // ===== 디버그 로그 =====
@@ -385,6 +386,8 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             withContext(Dispatchers.Main) {
                 processedBitmap = result
                 zoomImageView?.showProcessedPreview(result)
+                val density = ImageProcessor.colorTransitionDensity(result)
+                densityLabel?.text = "색 전환 밀도: %.1f%%".format(density)
             }
         }
     }
@@ -468,6 +471,17 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             topMargin = dp(12)
             bottomMargin = dp(12)
         })
+
+        // 색 전환 밀도 표시: 슬라이더/토글을 조절할 때마다 updatePreview()에서
+        // 실시간으로 갱신됩니다. e-ink 화면 갱신 성공/실패와 상관관계가
+        // 있는 것으로 추정되는 지표라, 이 숫자를 보면서 조절할 수 있게 합니다.
+        densityLabel = TextView(this).apply {
+            text = "색 전환 밀도: 계산 중..."
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, 10)
+        }
+        root.addView(densityLabel)
 
         // post{}: 뷰의 크기가 실제로 계산된 뒤에 줌 초기화를 실행 (타이밍 이슈 방지)
         // resetZoom()/setCropRect() 안에서 초기 상태 기준으로 결과 미리보기 갱신도 자동으로 호출됩니다.
