@@ -1219,12 +1219,34 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
      * busy 상태 등) 예외 없이 정상적으로 "오류 코드가 담긴" 응답을 돌려줍니다.
      * 이 오류를 무시하고 계속 진행한 게 이미지가 부분적으로만 써진 원인입니다.
      */
-    private fun transceiveChecked(isoDep: IsoDep, apdu: ByteArray): ByteArray {
-        val sendHex = apdu.joinToString(" ") { "%02X".format(it) }
+    // 16진수 변환을 빠르게 하기 위한 조회 테이블. String.format("%02X", ...)는
+    // 매번 포맷 문자열을 해석하고 로케일까지 신경 쓰느라 상당히 느린데,
+    // 이 방식은 미리 계산해둔 문자열 배열에서 그냥 꺼내 쓰기만 해서 훨씬 빠릅니다.
+    // 패킷이 480개(슬롯당 120개 x 4슬롯)나 되다 보니, 이 차이가 눈에 띄는
+    // 전송 속도 차이로 이어졌던 것으로 보입니다.
+    private val hexLookup = Array(256) { "%02X".format(it) }
+    private fun ByteArray.toHexFast(): String {
+        val sb = StringBuilder(size * 3)
+        for (i in indices) {
+            if (i > 0) sb.append(' ')
+            sb.append(hexLookup[this[i].toInt() and 0xFF])
+        }
+        return sb.toString()
+    }
+
+    /**
+     * @param logSendData 보낸 데이터(SEND)까지 로그에 남길지 여부.
+     *        D2로 대량 전송할 때(패킷 수백 개)는 보낸 데이터를 매번 16진수로
+     *        바꿔서 로그에 남기는 것 자체가 상당한 오버헤드라 꺼두고,
+     *        D4/DE처럼 횟수가 적고 중요한 명령은 계속 켜둡니다. 받은 데이터
+     *        (RECV)는 어느 경우든 항상 남깁니다 (에러 진단에 필요하므로).
+     */
+    private fun transceiveChecked(isoDep: IsoDep, apdu: ByteArray, logSendData: Boolean = true): ByteArray {
+        if (logSendData) {
+            logDebug("SEND: ${apdu.toHexFast()}")
+        }
         val response = isoDep.transceive(apdu)
-        val recvHex = response.joinToString(" ") { "%02X".format(it) }
-        logDebug("SEND: $sendHex")
-        logDebug("RECV: $recvHex")
+        logDebug("RECV: ${response.toHexFast()}")
 
         if (response.size < 2) {
             throw java.io.IOException("응답이 너무 짧습니다 (${response.size} bytes)")
@@ -1292,7 +1314,7 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
             while (attempt < maxRetriesPerPacket && !success) {
                 try {
-                    transceiveChecked(isoDep, apdu)
+                    transceiveChecked(isoDep, apdu, logSendData = false)
                     success = true
                 } catch (e: TagLostException) {
                     throw e
