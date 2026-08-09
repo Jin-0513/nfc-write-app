@@ -1300,8 +1300,14 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
      */
     private suspend fun sendSlotResumable(isoDep: IsoDep, slotData: ByteArray, imageIndex: Int) {
         val chunkSize = 250
-        val totalChunksInSlot = (slotData.size + chunkSize - 1) / chunkSize
         val maxRetriesPerPacket = 3
+
+        // 진행 숫자(N/M)를 패킷마다 갱신하는 대신, 슬롯 시작할 때 딱 한 번만
+        // "전송 중" 고정 텍스트를 띄웁니다. 전송 도중에는 화면을 아예 갱신하지
+        // 않아서, 메인(UI) 스레드로의 전환을 최대한 줄였습니다.
+        withContext(Dispatchers.Main) {
+            statusText?.text = "슬롯 ${imageIndex + 1}/$NUM_SLOTS 전송 중..."
+        }
 
         while (pendingSlotOffset < slotData.size) {
             val end = minOf(pendingSlotOffset + chunkSize, slotData.size)
@@ -1330,16 +1336,6 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
 
             pendingSlotOffset = end
             pendingSeq++
-
-            // 매 패킷마다 메인(UI) 스레드로 전환해서 상태 텍스트를 갱신하면
-            // 그 전환 자체의 오버헤드가 480번(4슬롯 x 120패킷) 누적되어
-            // 눈에 띄게 느려집니다. 10개마다 한 번, 그리고 슬롯의 마지막
-            // 패킷일 때만 갱신하도록 줄여서 전송 속도를 개선했습니다.
-            if (pendingSeq % 10 == 0 || pendingSlotOffset == slotData.size) {
-                withContext(Dispatchers.Main) {
-                    statusText?.text = "슬롯 ${imageIndex + 1}/$NUM_SLOTS - 전송 중... $pendingSeq / $totalChunksInSlot"
-                }
-            }
         }
     }
 
