@@ -1331,8 +1331,14 @@ class MainActivity : AppCompatActivity(), NfcAdapter.ReaderCallback {
             pendingSlotOffset = end
             pendingSeq++
 
-            withContext(Dispatchers.Main) {
-                statusText?.text = "슬롯 ${imageIndex + 1}/$NUM_SLOTS - 전송 중... $pendingSeq / $totalChunksInSlot"
+            // 매 패킷마다 메인(UI) 스레드로 전환해서 상태 텍스트를 갱신하면
+            // 그 전환 자체의 오버헤드가 480번(4슬롯 x 120패킷) 누적되어
+            // 눈에 띄게 느려집니다. 10개마다 한 번, 그리고 슬롯의 마지막
+            // 패킷일 때만 갱신하도록 줄여서 전송 속도를 개선했습니다.
+            if (pendingSeq % 10 == 0 || pendingSlotOffset == slotData.size) {
+                withContext(Dispatchers.Main) {
+                    statusText?.text = "슬롯 ${imageIndex + 1}/$NUM_SLOTS - 전송 중... $pendingSeq / $totalChunksInSlot"
+                }
             }
         }
     }
