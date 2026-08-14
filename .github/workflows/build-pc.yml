@@ -1,0 +1,38 @@
+name: Build PC Writer
+
+on:
+  push:
+    paths:
+      - 'pc-writer/**'
+      - '.github/workflows/build-pc.yml'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: pc-writer
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build exe with PyInstaller
+        run: |
+          pyinstaller --onefile --windowed --name nfc-badge-writer app.py
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nfc-badge-writer-windows
+          path: pc-writer/dist/nfc-badge-writer.exe
