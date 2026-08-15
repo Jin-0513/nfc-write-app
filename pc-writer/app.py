@@ -574,13 +574,19 @@ class App(tk.Tk):
             writer.connect()
             self._set_status("배지를 리더에 태그해주세요...")
             spec = writer.wait_for_card(timeout_sec=60.0, stop_flag=lambda: self._stop_flag)
-            self._append_log(f"--- 배지 스펙 확인: {spec.w}x{spec.h}, {spec.c}색 ---")
+
+            # 실측 결과, 배지가 NDEF로 알려주는 'H'/'W'는 우리가 흔히 쓰는
+            # "높이/폭" 의미와 반대로 대응됩니다 (예: 실제 400x600 배지가
+            # H=400&W=600으로 옴 -> H가 가로, W가 세로). 그래서 여기서는
+            # badge_width = spec.h, badge_height = spec.w로 뒤집어서 씁니다.
+            badge_width, badge_height = spec.h, spec.w
+            self._append_log(f"--- 배지 스펙 확인: {badge_width}x{badge_height}, {spec.c}색 ---")
 
             # 배지가 알려준 실제 스펙이 지금 편집한 크기와 다르면, 그 스펙에
             # 맞춰서 다시 렌더링합니다 (배지가 알려주는 값이 항상 정답이므로).
-            if (spec.w, spec.h) != self.target_size:
+            if (badge_width, badge_height) != self.target_size:
                 self._append_log(f"!! 편집 크기({self.target_size[0]}x{self.target_size[1]})와 배지 스펙이 달라 다시 렌더링합니다")
-                array_to_send = self._reprocess_for_spec(spec.w, spec.h)
+                array_to_send = self._reprocess_for_spec(badge_width, badge_height)
             else:
                 array_to_send = self.processed_array
 
@@ -590,7 +596,8 @@ class App(tk.Tk):
             def on_progress(sent, total):
                 pass  # 매 청크마다 상태를 갱신하면 느려질 수 있어 생략 (완료 로그만 남김)
 
-            writer.send_image(spec, image_bytes, done_timeout_sec=60.0, progress_callback=on_progress)
+            # 화면 실제 갱신은 이미지가 복잡할수록 오래 걸릴 수 있어 넉넉하게 대기
+            writer.send_image(spec, image_bytes, done_timeout_sec=180.0, progress_callback=on_progress)
             self._set_status("전송 완료! 배지 화면을 확인해주세요.")
         except NfcReaderError as e:
             self._append_log(f"!! 오류: {e}")

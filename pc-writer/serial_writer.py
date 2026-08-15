@@ -155,7 +155,7 @@ class NfcSerialWriter:
         self,
         spec: BadgeSpec,
         image_bytes: bytes,
-        done_timeout_sec: float = 60.0,
+        done_timeout_sec: float = 180.0,
         progress_callback: Optional[Callable[[int, int], None]] = None,
     ):
         """
@@ -170,22 +170,35 @@ class NfcSerialWriter:
         total = len(image_bytes)
         sent = 0
         chunk_index = 0
+        t0 = time.time()
         while sent < total:
             chunk = image_bytes[sent: sent + CHUNK_SIZE]
             self.ser.write(chunk)
-            self.ser.flush()
+            # 패킷마다 flush()를 부르면 "버퍼에 쌓기"가 아니라 "실제로
+            # 다 내보낼 때까지 대기"가 되어서, 480번 누적되면 눈에 띄게
+            # 느려집니다. 다 보낸 뒤 한 번만 flush해서 이 오버헤드를 없앴습니다.
             sent += len(chunk)
             chunk_index += 1
             if progress_callback:
                 progress_callback(sent, total)
+        self.ser.flush()
+        elapsed = time.time() - t0
 
-        self.log(f"--- 이미지 데이터 전송 완료 ({total} bytes, {chunk_index}개 패킷) ---")
+        self.log(f"--- 이미지 데이터 전송 완료 ({total} bytes, {chunk_index}개 패킷, {elapsed:.1f}초) ---")
 
-        # "done" 응답을 기다림. 화면 갱신까지 걸릴 수 있으니 넉넉하게 기다립니다.
+        # "done" 응답을 기다림. e-ink 화면 실제 갱신은 이미지가 복잡할수록
+        # 오래 걸릴 수 있어서(안드로이드 실측 기준 최대 60초 넘게 걸리기도
+        # 했음) 대기 시간을 넉넉하게 늘리고, 기다리는 동안 조용히 멈춘 것처럼
+        # 보이지 않게 10초마다 "아직 기다리는 중" 로그를 남깁니다.
         start = time.time()
+        last_heartbeat = start
         while time.time() - start < done_timeout_sec:
             line = self._read_line()
             if not line:
+                now = time.time()
+                if now - last_heartbeat >= 10.0:
+                    self.log(f"--- 'done' 응답 대기 중... ({now - start:.0f}초 경과, 화면 갱신에 시간이 걸릴 수 있음) ---")
+                    last_heartbeat = now
                 continue
             self.log(f"RECV: {line}")
             if line.strip().lower() == "done":
