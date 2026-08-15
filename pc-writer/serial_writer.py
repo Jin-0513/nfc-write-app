@@ -162,7 +162,13 @@ class NfcSerialWriter:
         핸드셰이크(picksmart&...) 전송 -> 이미지 바이너리 250바이트씩 전송
         -> "done" 응답 대기, 순서로 진행합니다.
         """
-        handshake = f"picksmart&{spec.raw_ndef}"
+        # 배지 NDEF 원문을 그대로 돌려보내지 않고, 파싱한 M/H/W/S/C 값만으로
+        # 문서 예시(picksmart&M=1&H=400&W=600&S=2&C=6)와 정확히 같은 형식의
+        # 깨끗한 문자열을 새로 만듭니다. 실측 결과 배지 NDEF에는 문서에 없는
+        # 정체불명의 추가 필드(예: "&99801384", 배지 고유번호로 추정)가 딸려
+        # 있었는데, 이걸 그대로 돌려보내면 리더가 정해진 형식과 다르다고
+        # 판단해서 핸드셰이크를 인식 못 했을 가능성이 있습니다.
+        handshake = f"picksmart&M={spec.m}&H={spec.h}&W={spec.w}&S={spec.s}&C={spec.c}"
         self.log(f"SEND: {handshake}")
         # 줄바꿈 없이 문자열만 보내면, 리더가 "이 명령이 아직 안 끝났다"고
         # 판단해서 계속 대기할 가능성이 있어 개행(\n)을 붙여서 보냅니다.
