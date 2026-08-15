@@ -164,8 +164,11 @@ class NfcSerialWriter:
         """
         handshake = f"picksmart&{spec.raw_ndef}"
         self.log(f"SEND: {handshake}")
-        self.ser.write(handshake.encode("utf-8"))
+        # 줄바꿈 없이 문자열만 보내면, 리더가 "이 명령이 아직 안 끝났다"고
+        # 판단해서 계속 대기할 가능성이 있어 개행(\n)을 붙여서 보냅니다.
+        self.ser.write((handshake + "\n").encode("utf-8"))
         self.ser.flush()
+        time.sleep(0.1)  # 리더가 핸드셰이크를 처리하고 바이너리 수신 모드로 전환할 시간을 줌
 
         total = len(image_bytes)
         sent = 0
