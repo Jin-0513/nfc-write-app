@@ -172,7 +172,11 @@ class NfcSerialWriter:
         self.log(f"SEND: {handshake}")
         # 줄바꿈 없이 문자열만 보내면, 리더가 "이 명령이 아직 안 끝났다"고
         # 판단해서 계속 대기할 가능성이 있어 개행(\n)을 붙여서 보냅니다.
-        self.ser.write((handshake + "\n").encode("utf-8"))
+        # 실측(시리얼 포트 모니터로 캡처한 제조사 프로그램의 성공 세션)
+        # 결과, 줄 끝에 0x0D 0x0A(캐리지리턴+줄바꿈, "\r\n")가 붙는 것을
+        # 확인했습니다. LF만 붙이면 리더가 한 줄이 끝난 걸로 인식하지 못해
+        # 계속 무응답이었던 것으로 보입니다.
+        self.ser.write((handshake + "\r\n").encode("utf-8"))
         self.ser.flush()
         time.sleep(0.1)  # 리더가 핸드셰이크를 처리하고 바이너리 수신 모드로 전환할 시간을 줌
 
