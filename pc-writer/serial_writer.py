@@ -187,14 +187,20 @@ class NfcSerialWriter:
         while sent < total:
             chunk = image_bytes[sent: sent + CHUNK_SIZE]
             self.ser.write(chunk)
-            # 패킷마다 flush()를 부르면 "버퍼에 쌓기"가 아니라 "실제로
-            # 다 내보낼 때까지 대기"가 되어서, 480번 누적되면 눈에 띄게
-            # 느려집니다. 다 보낸 뒤 한 번만 flush해서 이 오버헤드를 없앴습니다.
+            # 이전에 "속도 개선"이라며 패킷마다 flush()를 뺐었는데, 이게
+            # 오히려 문제였던 것으로 보입니다. flush()가 전선 전송 속도
+            # 자체에는 영향이 없지만, 우리 프로그램의 반복 속도를 살짝
+            # 늦춰줘서 리더 쪽 MCU가 각 패킷을 처리할 시간을 자연스럽게
+            # 벌어주는 역할을 했던 것 같습니다. 이걸 빼고 최대 속도로
+            # 쏘다 보니 리더가 못 따라와서 데이터를 놓쳤던 것으로 추정되어
+            # 다시 되돌립니다. (제조사 프로그램이 우리보다 느렸던 것도
+            # 사실은 의도된 페이싱이었을 가능성이 높습니다)
+            self.ser.flush()
+            time.sleep(0.005)  # 패킷 사이 5ms 여유 - 리더 MCU가 각 패킷을 처리할 시간을 추가로 확보
             sent += len(chunk)
             chunk_index += 1
             if progress_callback:
                 progress_callback(sent, total)
-        self.ser.flush()
         elapsed = time.time() - t0
 
         self.log(f"--- 이미지 데이터 전송 완료 ({total} bytes, {chunk_index}개 패킷, {elapsed:.1f}초) ---")
