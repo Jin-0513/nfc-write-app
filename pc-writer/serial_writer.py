@@ -170,15 +170,14 @@ class NfcSerialWriter:
         # 판단해서 핸드셰이크를 인식 못 했을 가능성이 있습니다.
         handshake = f"picksmart&M={spec.m}&H={spec.h}&W={spec.w}&S={spec.s}&C={spec.c}"
         self.log(f"SEND: {handshake}")
-        # 줄바꿈 없이 문자열만 보내면, 리더가 "이 명령이 아직 안 끝났다"고
-        # 판단해서 계속 대기할 가능성이 있어 개행(\n)을 붙여서 보냅니다.
-        # 실측(시리얼 포트 모니터로 캡처한 제조사 프로그램의 성공 세션)
-        # 결과, 줄 끝에 0x0D 0x0A(캐리지리턴+줄바꿈, "\r\n")가 붙는 것을
-        # 확인했습니다. LF만 붙이면 리더가 한 줄이 끝난 걸로 인식하지 못해
-        # 계속 무응답이었던 것으로 보입니다.
-        self.ser.write((handshake + "\r\n").encode("utf-8"))
+        # 제조사 공식 프로그램(app.asar)을 직접 뜯어본 결과, 핸드셰이크는
+        # Buffer.alloc(문자열 길이, 0) 후 그 문자열만 그대로 write() 합니다.
+        # 즉 줄바꿈이 전혀 없는 순수 텍스트입니다. 이전에 CRLF를 붙였던 건
+        # 착각이었습니다 - 그 CRLF는 리더가 "보내는" 응답(NfcNdefText 등)의
+        # 줄바꿈 구분자였지, 우리가 "보내는" 핸드셰이크에 붙이는 게 아니었습니다.
+        self.ser.write(handshake.encode("utf-8"))
         self.ser.flush()
-        time.sleep(0.1)  # 리더가 핸드셰이크를 처리하고 바이너리 수신 모드로 전환할 시간을 줌
+        time.sleep(0.2)  # 제조사 앱과 동일하게 핸드셰이크 후 200ms 대기
 
         total = len(image_bytes)
         sent = 0
@@ -187,16 +186,12 @@ class NfcSerialWriter:
         while sent < total:
             chunk = image_bytes[sent: sent + CHUNK_SIZE]
             self.ser.write(chunk)
-            # 이전에 "속도 개선"이라며 패킷마다 flush()를 뺐었는데, 이게
-            # 오히려 문제였던 것으로 보입니다. flush()가 전선 전송 속도
-            # 자체에는 영향이 없지만, 우리 프로그램의 반복 속도를 살짝
-            # 늦춰줘서 리더 쪽 MCU가 각 패킷을 처리할 시간을 자연스럽게
-            # 벌어주는 역할을 했던 것 같습니다. 이걸 빼고 최대 속도로
-            # 쏘다 보니 리더가 못 따라와서 데이터를 놓쳤던 것으로 추정되어
-            # 다시 되돌립니다. (제조사 프로그램이 우리보다 느렸던 것도
-            # 사실은 의도된 페이싱이었을 가능성이 높습니다)
             self.ser.flush()
-            time.sleep(0.005)  # 패킷 사이 5ms 여유 - 리더 MCU가 각 패킷을 처리할 시간을 추가로 확보
+            # 제조사 앱 코드에서 확인한 값: 400x600 6색 배지(id=3) 기준
+            # 250바이트 패킷마다 25ms씩 대기합니다. 이전에 5ms로 추측했던
+            # 건 너무 짧았습니다 - 리더 MCU가 각 패킷을 처리할 시간이
+            # 부족해서 데이터를 놓쳤던 것으로 보입니다.
+            time.sleep(0.025)
             sent += len(chunk)
             chunk_index += 1
             if progress_callback:
@@ -204,6 +199,12 @@ class NfcSerialWriter:
         elapsed = time.time() - t0
 
         self.log(f"--- 이미지 데이터 전송 완료 ({total} bytes, {chunk_index}개 패킷, {elapsed:.1f}초) ---")
+
+        # 제조사 앱은 우리 배지 타입(400x600, 6색)에서 데이터 전송이 끝나면
+        # "done" 체크 없이 무조건 25초를 그냥 기다립니다 (화면이 실제로
+        # 갱신되는 데 그만큼 걸린다는 뜻으로 보입니다). 우리는 그 대신
+        # 아래에서 "done" 응답을 계속 확인하는 방식을 쓰는데, 어차피 그 25초
+        # 근처에서 응답이 올 테니 굳이 blind sleep으로 바꿀 필요는 없습니다.
 
         # "done" 응답을 기다림. e-ink 화면 실제 갱신은 이미지가 복잡할수록
         # 오래 걸릴 수 있어서(안드로이드 실측 기준 최대 60초 넘게 걸리기도
@@ -220,7 +221,7 @@ class NfcSerialWriter:
                     last_heartbeat = now
                 continue
             self.log(f"RECV: {line}")
-            if line.strip().lower() == "done":
+            if line.strip().lower().startswith("done"):
                 return
             # "done"이 아닌 다른 응답(에러 메시지 등)이 오면 그대로 로그에 남기고 계속 기다림
 
