@@ -16,14 +16,14 @@ from enum import Enum
 import numpy as np
 from PIL import Image
 
-from color_palette import SPECTRA6, PALETTE_RGB_ARRAY, PALETTE_CODE_ARRAY, nearest_color_indices_bulk
+from color_palette import SPECTRA6, PALETTE_RGB_ARRAY, PALETTE_CODE_ARRAY, nearest_color_indices_bulk, WEIGHT_R, WEIGHT_G, WEIGHT_B
 
 CLEAN_THRESHOLD_MIN = 0
 CLEAN_THRESHOLD_MAX = 20000
 
-DEFAULT_CONTRAST_BOOST = 1.2
-DEFAULT_SATURATION_BOOST = 1.2
-DEFAULT_EDGE_STRENGTH = 0.2
+DEFAULT_CONTRAST_BOOST = 1.0
+DEFAULT_SATURATION_BOOST = 1.0
+DEFAULT_EDGE_STRENGTH = 0.0
 
 
 class Algorithm(Enum):
@@ -34,7 +34,7 @@ class Algorithm(Enum):
 
 @dataclass
 class ProcessOptions:
-    algorithm: Algorithm = Algorithm.DITHER
+    algorithm: Algorithm = Algorithm.ATKINSON
     clean_threshold: int = CLEAN_THRESHOLD_MIN
     contrast_boost: float = DEFAULT_CONTRAST_BOOST
     saturation_boost: float = DEFAULT_SATURATION_BOOST
@@ -177,11 +177,12 @@ def floyd_steinberg(img: np.ndarray, noise_threshold: int = 0) -> np.ndarray:
     out = np.zeros((h, w, 3), dtype=np.uint8)
 
     palette = PALETTE_RGB_ARRAY.astype(np.float32)  # (6, 3)
+    weights = np.array([WEIGHT_R, WEIGHT_G, WEIGHT_B], dtype=np.float32)
 
     for y in range(h):
         for x in range(w):
             old = buf[y, x]
-            dist = np.sum((palette - old) ** 2, axis=1)
+            dist = np.sum((palette - old) ** 2 * weights, axis=1)
             idx = int(np.argmin(dist))
             matched = palette[idx]
             out[y, x] = matched.astype(np.uint8)
@@ -202,23 +203,28 @@ def floyd_steinberg(img: np.ndarray, noise_threshold: int = 0) -> np.ndarray:
 
 
 def atkinson(img: np.ndarray) -> np.ndarray:
-    """Atkinson 디더링. 오차의 3/4만 6개 이웃에 1/8씩 나눠주고 나머지는 버립니다."""
+    """
+    Atkinson 디더링. 오차의 3/4만 6개 이웃에 1/8씩 나눠주고 나머지는 버립니다.
+    제조사 코드와 동일하게, 확산되는 오차는 채널별로 정수로 내림(floor)
+    처리합니다 (부동소수점을 그대로 누적하지 않음).
+    """
     h, w, _ = img.shape
     buf = img.astype(np.float32).copy()
     out = np.zeros((h, w, 3), dtype=np.uint8)
     palette = PALETTE_RGB_ARRAY.astype(np.float32)
+    weights = np.array([WEIGHT_R, WEIGHT_G, WEIGHT_B], dtype=np.float32)
 
     neighbors = [(1, 0), (2, 0), (-1, 1), (0, 1), (1, 1), (0, 2)]
 
     for y in range(h):
         for x in range(w):
             old = buf[y, x]
-            dist = np.sum((palette - old) ** 2, axis=1)
+            dist = np.sum((palette - old) ** 2 * weights, axis=1)
             idx = int(np.argmin(dist))
             matched = palette[idx]
             out[y, x] = matched.astype(np.uint8)
 
-            err = (old - matched) / 8.0
+            err = np.floor((old - matched) / 8.0)
             for dx, dy in neighbors:
                 nx, ny = x + dx, y + dy
                 if 0 <= nx < w and 0 <= ny < h:

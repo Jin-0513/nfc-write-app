@@ -277,10 +277,10 @@ class App(tk.Tk):
         self.processed_array: np.ndarray | None = None
         self.target_size = DEFAULT_TARGET_SIZE
 
-        self.algorithm = ip.Algorithm.DITHER
+        self.algorithm = ip.Algorithm.ATKINSON  # 제조사 프로그램과 동일한 기본 알고리즘
         self.clean_threshold = ip.CLEAN_THRESHOLD_MIN
-        self.contrast_percent = 120
-        self.saturation_percent = 120
+        self.contrast_percent = int(ip.DEFAULT_CONTRAST_BOOST * 100)   # 100% = 보정 없음 (제조사와 동일)
+        self.saturation_percent = int(ip.DEFAULT_SATURATION_BOOST * 100)
         self.edge_percent = int(ip.DEFAULT_EDGE_STRENGTH * 100)
         self.use_block_dither = False
         self.use_despeckle = False
