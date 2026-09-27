@@ -1,13 +1,11 @@
 """
 app.py
 ------
-NFC 배지 쓰기 PC 프로그램. 안드로이드 앱과 동일한 UI/기능 구성을 따릅니다:
+NFC 배지 쓰기 PC 프로그램.
 
-1. 이미지 선택 화면
-2. 편집 화면: 틀 안에서 마우스로 확대/이동(크롭) + 결과 미리보기 겸용,
-   알고리즘 선택(디더링/Atkinson/컬러그레이딩), 명암비/채도/선화강조/
-   노이즈감소 슬라이더, 블록디더링/잡티제거 토글, 색 전환 밀도 표시
-3. 쓰기 화면: 포트 선택, 배지 태그 대기, 전송 진행, 로그(복사 가능)
+한 화면에서 이미지 선택 -> 틀 안에서 확대/이동(크롭) + 결과 미리보기 겸용 ->
+알고리즘/슬라이더/토글 조절 -> 포트 선택 -> 쓰기까지 전부 처리합니다.
+화면이 위아래로 길어서, 로그는 오른쪽에 별도 스크롤 영역으로 둡니다.
 """
 
 import queue
@@ -21,19 +19,18 @@ from PIL import Image, ImageTk
 import image_processor as ip
 from serial_writer import NfcSerialWriter, NfcReaderError, list_available_ports
 
-# 배지 기본 해상도 (DMN036EW 6색, 400x600). 200x300은 저전압 가설 테스트용.
-DEFAULT_TARGET_SIZE = (400, 600)
-TEST_TARGET_SIZE = (200, 300)
+# 배지 해상도 고정 (DMN036EW 6색, 400x600)
+TARGET_SIZE = (400, 600)
 
-CANVAS_W = 300
-CANVAS_H = 450  # 2:3 비율 (400:600과 동일)
+# 메인 이미지 틀을 배지 실제 해상도 그대로(400x600) 보여줍니다.
+CANVAS_W, CANVAS_H = TARGET_SIZE
 
 
 class CropCanvas(tk.Canvas):
     """
     틀 안에서 마우스로 확대(휠)/이동(드래그)할 수 있는 캔버스.
-    안드로이드의 ZoomableImageView와 동일한 역할 - 원본 이미지를 틀에
-    꽉 채워서 보여주고, 확대/이동한 영역이 곧 실제로 배지에 쓰여질 영역입니다.
+    원본 이미지를 틀에 꽉 채워서 보여주고, 확대/이동한 영역이 곧 실제로
+    배지에 쓰여질 영역입니다.
 
     on_transform_settled: 확대/이동이 끝났을 때(마우스를 뗐을 때/휠 조작 후)
     호출되는 콜백. 결과 미리보기를 다시 계산하는 데 씁니다.
@@ -221,9 +218,9 @@ class SliderRow(tk.Frame):
         self.unit = unit
         self.on_change = on_change
         self.value = initial
+        self._name = label
 
         self.label_var = tk.StringVar()
-        self._update_label_text()
         self.label = tk.Label(self, textvariable=self.label_var, width=14, anchor="w")
         self.label.pack(side="left")
 
@@ -238,8 +235,7 @@ class SliderRow(tk.Frame):
         self.plus_btn = tk.Button(self, text="+", width=2, command=self._on_plus)
         self.plus_btn.pack(side="left")
 
-    def _update_label_text(self):
-        self.label_var.set(f"{self.label_text if hasattr(self, 'label_text') else ''}")
+        self.label_var.set(f"{self._name}: {self.value}{self.unit}")
 
     def _set_value(self, v):
         v = max(self.value_min, min(self.value_max, v))
@@ -262,20 +258,16 @@ class SliderRow(tk.Frame):
         if self.on_change:
             self.on_change(v)
 
-    def set_name(self, name):
-        self._name = name
-        self.label_var.set(f"{name}: {self.value}{self.unit}")
-
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("NFC 배지 쓰기")
-        self.geometry("420x820")
+        self.geometry("980x900")
 
         self.original_pil_image: Image.Image | None = None
         self.processed_array: np.ndarray | None = None
-        self.target_size = DEFAULT_TARGET_SIZE
+        self.target_size = TARGET_SIZE  # 400x600 고정
 
         self.algorithm = ip.Algorithm.ATKINSON  # 제조사 프로그램과 동일한 기본 알고리즘
         self.clean_threshold = ip.CLEAN_THRESHOLD_MIN
@@ -286,25 +278,122 @@ class App(tk.Tk):
         self.use_despeckle = False
 
         self._preview_after_id = None
+        self._stop_flag = False
+        self._writer_thread = None
+        self._log_queue: "queue.Queue[str]" = queue.Queue()
 
-        self.container = tk.Frame(self)
-        self.container.pack(fill="both", expand=True)
-
-        self.show_picker_screen()
+        self._build_ui()
+        self.after(50, self._poll_log_queue)
 
     # ------------------------------------------------------------------
-    # 화면 1: 이미지 선택
+    # 화면 구성 (한 화면에 전부: 왼쪽 편집/쓰기 컨트롤, 오른쪽 로그)
     # ------------------------------------------------------------------
-    def show_picker_screen(self):
-        for w in self.container.winfo_children():
-            w.destroy()
+    def _build_ui(self):
+        root_frame = tk.Frame(self)
+        root_frame.pack(fill="both", expand=True)
 
-        frame = tk.Frame(self.container)
-        frame.pack(fill="both", expand=True, padx=20, pady=20)
+        left = tk.Frame(root_frame)
+        left.pack(side="left", fill="y", padx=8, pady=8)
 
-        tk.Label(frame, text="NFC 배지에 쓸 이미지를 선택하세요", font=("", 12)).pack(pady=40)
-        tk.Button(frame, text="이미지 선택", font=("", 12), command=self._pick_image).pack()
+        right = tk.Frame(root_frame)
+        right.pack(side="left", fill="both", expand=True, padx=8, pady=8)
 
+        self._build_left_panel(left)
+        self._build_right_panel(right)
+
+    def _build_left_panel(self, parent):
+        # --- 틀 + 좌우 확대 버튼 ---
+        canvas_frame = tk.Frame(parent)
+        canvas_frame.pack(pady=4)
+
+        self.crop_canvas = CropCanvas(canvas_frame)
+        self.crop_canvas.pack(side="left")
+        self.crop_canvas.on_transform_settled = self._schedule_preview_update
+
+        zoom_col = tk.Frame(canvas_frame)
+        zoom_col.pack(side="left", padx=6)
+        tk.Button(zoom_col, text="확대", width=4, command=lambda: self.crop_canvas.zoom_by(1.1)).pack(pady=2)
+        tk.Button(zoom_col, text="축소", width=4, command=lambda: self.crop_canvas.zoom_by(1 / 1.1)).pack(pady=2)
+
+        # --- 이미지 선택 ---
+        pick_row = tk.Frame(parent)
+        pick_row.pack(fill="x", pady=4)
+        tk.Button(pick_row, text="이미지 선택", command=self._pick_image).pack(fill="x")
+
+        # --- 알고리즘 선택 ---
+        algo_row = tk.Frame(parent)
+        algo_row.pack(pady=4)
+        tk.Button(algo_row, text="디더링", command=lambda: self._set_algorithm(ip.Algorithm.DITHER)).pack(side="left", padx=2)
+        tk.Button(algo_row, text="Atkinson", command=lambda: self._set_algorithm(ip.Algorithm.ATKINSON)).pack(side="left", padx=2)
+        tk.Button(algo_row, text="컬러 그레이딩", command=lambda: self._set_algorithm(ip.Algorithm.COLOR_GRADING)).pack(side="left", padx=2)
+
+        # --- 슬라이더들 ---
+        sliders_frame = tk.Frame(parent)
+        sliders_frame.pack(fill="x", pady=4)
+
+        self.clean_slider = SliderRow(sliders_frame, "노이즈 감소", 0, 100,
+                                       self._threshold_to_percent(self.clean_threshold), 1,
+                                       self._on_clean_change)
+        self.clean_slider.pack(fill="x", pady=2)
+
+        self.contrast_slider = SliderRow(sliders_frame, "명암비", 100, 200, self.contrast_percent, 1,
+                                          self._on_contrast_change)
+        self.contrast_slider.pack(fill="x", pady=2)
+
+        self.saturation_slider = SliderRow(sliders_frame, "채도", 100, 200, self.saturation_percent, 1,
+                                            self._on_saturation_change)
+        self.saturation_slider.pack(fill="x", pady=2)
+
+        self.edge_slider = SliderRow(sliders_frame, "선화 강조", 0, 100, self.edge_percent, 1,
+                                      self._on_edge_change)
+        self.edge_slider.pack(fill="x", pady=2)
+
+        # --- 토글 버튼 ---
+        toggle_row = tk.Frame(parent)
+        toggle_row.pack(pady=4)
+        self.block_dither_btn = tk.Button(toggle_row, text=self._block_dither_label(), command=self._toggle_block_dither)
+        self.block_dither_btn.pack(side="left", padx=2)
+        self.despeckle_btn = tk.Button(toggle_row, text=self._despeckle_label(), command=self._toggle_despeckle)
+        self.despeckle_btn.pack(side="left", padx=2)
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=8)
+
+        # --- 포트 선택 + 쓰기 ---
+        port_row = tk.Frame(parent)
+        port_row.pack(fill="x", pady=4)
+        tk.Label(port_row, text="포트:").pack(side="left")
+        self.port_var = tk.StringVar()
+        ports = list_available_ports()
+        self.port_combo = ttk.Combobox(port_row, textvariable=self.port_var,
+                                        values=[f"{d} ({desc})" for d, desc in ports], state="readonly", width=20)
+        if ports:
+            self.port_combo.current(0)
+        self.port_combo.pack(side="left", fill="x", expand=True, padx=4)
+        tk.Button(port_row, text="새로고침", command=self._refresh_ports).pack(side="left")
+
+        self.start_btn = tk.Button(parent, text="쓰기 시작", command=self._start_write, font=("", 11, "bold"))
+        self.start_btn.pack(fill="x", pady=6)
+
+        self.status_label = tk.Label(parent, text="이미지를 선택해주세요", wraplength=380, justify="left", anchor="w")
+        self.status_label.pack(fill="x", pady=4)
+
+    def _build_right_panel(self, parent):
+        tk.Label(parent, text="로그", font=("", 11, "bold")).pack(anchor="w")
+
+        log_frame = tk.Frame(parent)
+        log_frame.pack(fill="both", expand=True)
+
+        self.log_text = tk.Text(log_frame, wrap="word")
+        scrollbar = tk.Scrollbar(log_frame, command=self.log_text.yview)
+        self.log_text.config(yscrollcommand=scrollbar.set)
+        self.log_text.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        tk.Button(parent, text="전체 복사", command=self._copy_log).pack(pady=6)
+
+    # ------------------------------------------------------------------
+    # 이미지 선택 / 편집
+    # ------------------------------------------------------------------
     def _pick_image(self):
         path = filedialog.askopenfilename(
             title="이미지 선택",
@@ -317,89 +406,8 @@ class App(tk.Tk):
         except Exception as e:
             messagebox.showerror("오류", f"이미지를 열 수 없습니다: {e}")
             return
-        self.show_editor_screen()
-
-    # ------------------------------------------------------------------
-    # 화면 2: 편집 (크롭/확대 + 결과 미리보기 + 알고리즘/슬라이더)
-    # ------------------------------------------------------------------
-    def show_editor_screen(self):
-        for w in self.container.winfo_children():
-            w.destroy()
-
-        outer = tk.Frame(self.container)
-        outer.pack(fill="both", expand=True)
-
-        canvas_frame = tk.Frame(outer)
-        canvas_frame.pack(pady=10)
-
-        self.crop_canvas = CropCanvas(canvas_frame)
-        self.crop_canvas.pack(side="left")
-        self.crop_canvas.on_transform_settled = self._schedule_preview_update
         self.crop_canvas.set_image(self.original_pil_image)
-
-        zoom_col = tk.Frame(canvas_frame)
-        zoom_col.pack(side="left", padx=6)
-        tk.Button(zoom_col, text="확대", width=4, command=lambda: self.crop_canvas.zoom_by(1.1)).pack(pady=2)
-        tk.Button(zoom_col, text="축소", width=4, command=lambda: self.crop_canvas.zoom_by(1 / 1.1)).pack(pady=2)
-
-        self.density_label = tk.Label(outer, text="색 전환 밀도: 계산 중...")
-        self.density_label.pack(pady=(0, 6))
-
-        # --- 알고리즘 선택 ---
-        algo_row = tk.Frame(outer)
-        algo_row.pack(pady=4)
-        tk.Button(algo_row, text="디더링", command=lambda: self._set_algorithm(ip.Algorithm.DITHER)).pack(side="left", padx=2)
-        tk.Button(algo_row, text="Atkinson", command=lambda: self._set_algorithm(ip.Algorithm.ATKINSON)).pack(side="left", padx=2)
-        tk.Button(algo_row, text="컬러 그레이딩", command=lambda: self._set_algorithm(ip.Algorithm.COLOR_GRADING)).pack(side="left", padx=2)
-
-        # --- 크기 선택 ---
-        size_row = tk.Frame(outer)
-        size_row.pack(pady=4)
-        self.size_label = tk.Label(size_row, text=f"크기: {self.target_size[0]}x{self.target_size[1]}")
-        self.size_label.pack(side="left", padx=4)
-        tk.Button(size_row, text="400x600 (정품)", command=lambda: self._set_target_size(DEFAULT_TARGET_SIZE)).pack(side="left", padx=2)
-        tk.Button(size_row, text="200x300 (테스트)", command=lambda: self._set_target_size(TEST_TARGET_SIZE)).pack(side="left", padx=2)
-
-        # --- 슬라이더들 ---
-        sliders_frame = tk.Frame(outer)
-        sliders_frame.pack(fill="x", padx=10, pady=6)
-
-        self.clean_slider = SliderRow(sliders_frame, "노이즈 감소", 0, 100,
-                                       self._threshold_to_percent(self.clean_threshold), 1,
-                                       self._on_clean_change)
-        self.clean_slider.set_name("노이즈 감소")
-        self.clean_slider.pack(fill="x", pady=2)
-
-        self.contrast_slider = SliderRow(sliders_frame, "명암비", 100, 200, self.contrast_percent, 1,
-                                          self._on_contrast_change)
-        self.contrast_slider.set_name("명암비")
-        self.contrast_slider.pack(fill="x", pady=2)
-
-        self.saturation_slider = SliderRow(sliders_frame, "채도", 100, 200, self.saturation_percent, 1,
-                                            self._on_saturation_change)
-        self.saturation_slider.set_name("채도")
-        self.saturation_slider.pack(fill="x", pady=2)
-
-        self.edge_slider = SliderRow(sliders_frame, "선화 강조", 0, 100, self.edge_percent, 1,
-                                      self._on_edge_change)
-        self.edge_slider.set_name("선화 강조")
-        self.edge_slider.pack(fill="x", pady=2)
-
-        # --- 토글 버튼 ---
-        toggle_row = tk.Frame(outer)
-        toggle_row.pack(pady=6)
-        self.block_dither_btn = tk.Button(toggle_row, text=self._block_dither_label(), command=self._toggle_block_dither)
-        self.block_dither_btn.pack(side="left", padx=2)
-        self.despeckle_btn = tk.Button(toggle_row, text=self._despeckle_label(), command=self._toggle_despeckle)
-        self.despeckle_btn.pack(side="left", padx=2)
-
-        # --- 하단 버튼 ---
-        action_row = tk.Frame(outer)
-        action_row.pack(pady=10)
-        tk.Button(action_row, text="다른 이미지", command=self.show_picker_screen).pack(side="left", padx=4)
-        tk.Button(action_row, text="쓰기", command=self.show_write_screen).pack(side="left", padx=4)
-
-        self._schedule_preview_update()
+        self.status_label.config(text="이미지 로드됨. 배지를 리더에 태그하고 '쓰기 시작'을 눌러주세요")
 
     def _threshold_to_percent(self, threshold):
         span = ip.CLEAN_THRESHOLD_MAX - ip.CLEAN_THRESHOLD_MIN
@@ -429,11 +437,6 @@ class App(tk.Tk):
         self.algorithm = algo
         self._schedule_preview_update()
 
-    def _set_target_size(self, size):
-        self.target_size = size
-        self.size_label.config(text=f"크기: {size[0]}x{size[1]}")
-        self._schedule_preview_update()
-
     def _on_clean_change(self, percent):
         self.clean_threshold = self._percent_to_threshold(percent)
         self._schedule_preview_update(debounce_ms=80)
@@ -451,9 +454,22 @@ class App(tk.Tk):
         self._schedule_preview_update(debounce_ms=80)
 
     def _schedule_preview_update(self, debounce_ms=0):
+        if self.original_pil_image is None:
+            return
         if self._preview_after_id is not None:
             self.after_cancel(self._preview_after_id)
         self._preview_after_id = self.after(max(debounce_ms, 1), self._update_preview)
+
+    def _current_options(self):
+        return ip.ProcessOptions(
+            algorithm=self.algorithm,
+            clean_threshold=self.clean_threshold,
+            contrast_boost=self.contrast_percent / 100.0,
+            saturation_boost=self.saturation_percent / 100.0,
+            edge_strength=self.edge_percent / 100.0,
+            use_block_dither=self.use_block_dither,
+            use_despeckle=self.use_despeckle,
+        )
 
     def _update_preview(self):
         self._preview_after_id = None
@@ -469,70 +485,13 @@ class App(tk.Tk):
             else:
                 cropped = self.original_pil_image.crop((int(left), int(top), int(right), int(bottom)))
 
-        opts = ip.ProcessOptions(
-            algorithm=self.algorithm,
-            clean_threshold=self.clean_threshold,
-            contrast_boost=self.contrast_percent / 100.0,
-            saturation_boost=self.saturation_percent / 100.0,
-            edge_strength=self.edge_percent / 100.0,
-            use_block_dither=self.use_block_dither,
-            use_despeckle=self.use_despeckle,
-        )
-        result = ip.process(cropped, self.target_size[0], self.target_size[1], opts)
+        result = ip.process(cropped, self.target_size[0], self.target_size[1], self._current_options())
         self.processed_array = result
         self.crop_canvas.show_processed_preview(result)
-        density = ip.color_transition_density(result)
-        self.density_label.config(text=f"색 전환 밀도: {density:.1f}%")
 
     # ------------------------------------------------------------------
-    # 화면 3: 쓰기 (포트 선택 + 태그 대기 + 전송 + 로그)
+    # 쓰기 (포트 선택 + 태그 대기 + 전송 + 로그)
     # ------------------------------------------------------------------
-    def show_write_screen(self):
-        if self.processed_array is None:
-            messagebox.showwarning("안내", "먼저 편집 화면에서 이미지를 준비해주세요")
-            return
-
-        for w in self.container.winfo_children():
-            w.destroy()
-
-        frame = tk.Frame(self.container)
-        frame.pack(fill="both", expand=True, padx=10, pady=10)
-
-        port_row = tk.Frame(frame)
-        port_row.pack(fill="x", pady=4)
-        tk.Label(port_row, text="포트:").pack(side="left")
-        self.port_var = tk.StringVar()
-        ports = list_available_ports()
-        self.port_combo = ttk.Combobox(port_row, textvariable=self.port_var,
-                                        values=[f"{d} ({desc})" for d, desc in ports], state="readonly")
-        if ports:
-            self.port_combo.current(0)
-        self.port_combo.pack(side="left", fill="x", expand=True, padx=4)
-        tk.Button(port_row, text="새로고침", command=self._refresh_ports).pack(side="left")
-
-        self.status_label = tk.Label(frame, text="포트를 선택하고 '쓰기 시작'을 눌러주세요", wraplength=380, justify="left")
-        self.status_label.pack(fill="x", pady=6)
-
-        log_frame = tk.Frame(frame)
-        log_frame.pack(fill="both", expand=True)
-        self.log_text = tk.Text(log_frame, height=18, wrap="word")
-        scrollbar = tk.Scrollbar(log_frame, command=self.log_text.yview)
-        self.log_text.config(yscrollcommand=scrollbar.set)
-        self.log_text.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        btn_row = tk.Frame(frame)
-        btn_row.pack(pady=6)
-        self.start_btn = tk.Button(btn_row, text="쓰기 시작", command=self._start_write)
-        self.start_btn.pack(side="left", padx=4)
-        tk.Button(btn_row, text="전체 복사", command=self._copy_log).pack(side="left", padx=4)
-        tk.Button(btn_row, text="뒤로", command=self.show_editor_screen).pack(side="left", padx=4)
-
-        self._log_queue: "queue.Queue[str]" = queue.Queue()
-        self._stop_flag = False
-        self._writer_thread = None
-        self.after(50, self._poll_log_queue)
-
     def _refresh_ports(self):
         ports = list_available_ports()
         self.port_combo["values"] = [f"{d} ({desc})" for d, desc in ports]
@@ -557,6 +516,9 @@ class App(tk.Tk):
         self.after(50, self._poll_log_queue)
 
     def _start_write(self):
+        if self.processed_array is None:
+            messagebox.showwarning("안내", "먼저 이미지를 선택해주세요")
+            return
         if not self.port_var.get():
             messagebox.showwarning("안내", "포트를 선택해주세요")
             return
@@ -582,8 +544,6 @@ class App(tk.Tk):
             badge_width, badge_height = spec.h, spec.w
             self._append_log(f"--- 배지 스펙 확인: {badge_width}x{badge_height}, {spec.c}색 ---")
 
-            # 배지가 알려준 실제 스펙이 지금 편집한 크기와 다르면, 그 스펙에
-            # 맞춰서 다시 렌더링합니다 (배지가 알려주는 값이 항상 정답이므로).
             if (badge_width, badge_height) != self.target_size:
                 self._append_log(f"!! 편집 크기({self.target_size[0]}x{self.target_size[1]})와 배지 스펙이 달라 다시 렌더링합니다")
                 array_to_send = self._reprocess_for_spec(badge_width, badge_height)
@@ -593,11 +553,7 @@ class App(tk.Tk):
             image_bytes = ip.pack_for_badge(array_to_send, flip_180=True)
             self._set_status(f"전송 중... (총 {len(image_bytes)} bytes)")
 
-            def on_progress(sent, total):
-                pass  # 매 청크마다 상태를 갱신하면 느려질 수 있어 생략 (완료 로그만 남김)
-
-            # 화면 실제 갱신은 이미지가 복잡할수록 오래 걸릴 수 있어 넉넉하게 대기
-            writer.send_image(spec, image_bytes, done_timeout_sec=180.0, progress_callback=on_progress)
+            writer.send_image(spec, image_bytes, done_timeout_sec=180.0)
             self._set_status("전송 완료! 배지 화면을 확인해주세요.")
         except NfcReaderError as e:
             self._append_log(f"!! 오류: {e}")
@@ -616,20 +572,10 @@ class App(tk.Tk):
         else:
             left, top, right, bottom = rect
             cropped = self.original_pil_image.crop((int(left), int(top), int(right), int(bottom)))
-        opts = ip.ProcessOptions(
-            algorithm=self.algorithm,
-            clean_threshold=self.clean_threshold,
-            contrast_boost=self.contrast_percent / 100.0,
-            saturation_boost=self.saturation_percent / 100.0,
-            edge_strength=self.edge_percent / 100.0,
-            use_block_dither=self.use_block_dither,
-            use_despeckle=self.use_despeckle,
-        )
-        return ip.process(cropped, w, h, opts)
+        return ip.process(cropped, w, h, self._current_options())
 
     def _set_status(self, text):
         self._append_log(f"[상태] {text}")
-        # status_label은 메인 스레드가 아닌 곳에서 직접 건드리면 안 되므로 after() 경유
         self.after(0, lambda: self.status_label.config(text=text))
 
     def _enable_start_button(self):

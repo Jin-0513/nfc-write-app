@@ -287,7 +287,12 @@ def process(source: Image.Image, target_width: int, target_height: int, opts: Pr
     원본 PIL 이미지를 받아서 목표 크기로 리사이즈 -> 전처리 -> 양자화까지
     끝낸 (H, W, 3) uint8 numpy 배열(6색으로만 구성됨)을 돌려줍니다.
     """
-    resized = source.convert("RGB").resize((target_width, target_height), Image.LANCZOS)
+    # 제조사 앱은 브라우저 canvas의 drawImage()로 리사이즈하는데, 이건 부드러운
+    # bilinear 계열 방식입니다. 저희가 쓰던 LANCZOS는 더 선명하지만 명암 대비가
+    # 강한 경계(어두운 실루엣과 밝은 배경 사이) 근처에서 링잉(오버슈트) 아티팩트를
+    # 만들어내서, 그 잔물결이 주변의 균일한 영역(하늘 등)까지 번져 디더링 노이즈로
+    # 나타나는 원인이었습니다. BILINEAR로 바꿔서 제조사와 같은 결과를 냅니다.
+    resized = source.convert("RGB").resize((target_width, target_height), Image.BILINEAR)
     arr = np.array(resized)
 
     arr = enhance_contrast_and_saturation(arr, opts.contrast_boost, opts.saturation_boost)
