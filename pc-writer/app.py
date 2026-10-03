@@ -206,6 +206,22 @@ class CropCanvas(tk.Canvas):
         """버튼으로 확대/축소할 때 사용 (캔버스 중앙 기준)."""
         self._zoom_at(self.canvas_w / 2, self.canvas_h / 2, factor)
 
+    def pan_by(self, dx, dy):
+        """
+        버튼으로 이미지를 정확히 지정한 픽셀(화면 기준)만큼 이동시킵니다.
+        마우스 드래그로는 4픽셀 같은 미세한 이동이 어려워서, 상/하/좌/우
+        버튼을 눌러 정확하게 움직일 수 있게 하기 위한 용도입니다.
+        """
+        if self.original_image is None:
+            return
+        self._return_to_edit_mode_if_needed()
+        self.offset_x += dx
+        self.offset_y += dy
+        self._clamp()
+        self._redraw()
+        if self.on_transform_settled:
+            self.on_transform_settled()
+
 
 class SliderRow(tk.Frame):
     """라벨 + (-)버튼 + 슬라이더 + (+)버튼을 한 줄에 배치하는 재사용 위젯."""
@@ -263,7 +279,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("NFC 배지 쓰기")
-        self.geometry("980x900")
+        self.geometry("980x985")
+        self.minsize(980, 985)
 
         self.original_pil_image: Image.Image | None = None
         self.processed_array: np.ndarray | None = None
@@ -278,12 +295,22 @@ class App(tk.Tk):
         self.use_despeckle = False
 
         self._preview_after_id = None
+
+        # --- 배지 감시/쓰기 관련 상태 ---
+        # 리더에 배지가 올라와 있는지를 백그라운드에서 계속 감시해서,
+        # '쓰기 시작' 버튼의 문구/활성화 상태를 실시간으로 바꿉니다.
         self._stop_flag = False
-        self._writer_thread = None
+        self._monitor_thread = None
+        self._monitor_token = 0        # 포트 전환 시 이전 감시 스레드를 안전하게 종료하기 위한 토큰
+        self._monitor_port = None      # 지금 감시 중인 포트 (바뀌면 재시작)
+        self._card_present = False
+        self._write_requested = threading.Event()  # 버튼 클릭 시 set() -> 감시 스레드가 즉시 전송 시작
         self._log_queue: "queue.Queue[str]" = queue.Queue()
 
         self._build_ui()
         self.after(50, self._poll_log_queue)
+        self.port_combo.bind("<<ComboboxSelected>>", lambda e: self._restart_monitor())
+        self._restart_monitor()
 
     # ------------------------------------------------------------------
     # 화면 구성 (한 화면에 전부: 왼쪽 편집/쓰기 컨트롤, 오른쪽 로그)
@@ -302,7 +329,7 @@ class App(tk.Tk):
         self._build_right_panel(right)
 
     def _build_left_panel(self, parent):
-        # --- 틀 + 좌우 확대 버튼 ---
+        # --- 틀 + 확대/축소 + 상하좌우 이동 버튼 ---
         canvas_frame = tk.Frame(parent)
         canvas_frame.pack(pady=4)
 
@@ -310,22 +337,43 @@ class App(tk.Tk):
         self.crop_canvas.pack(side="left")
         self.crop_canvas.on_transform_settled = self._schedule_preview_update
 
-        zoom_col = tk.Frame(canvas_frame)
-        zoom_col.pack(side="left", padx=6)
-        tk.Button(zoom_col, text="확대", width=4, command=lambda: self.crop_canvas.zoom_by(1.1)).pack(pady=2)
-        tk.Button(zoom_col, text="축소", width=4, command=lambda: self.crop_canvas.zoom_by(1 / 1.1)).pack(pady=2)
+        side_col = tk.Frame(canvas_frame)
+        side_col.pack(side="left", padx=6, fill="y")
+        tk.Button(side_col, text="확대", width=4, command=lambda: self.crop_canvas.zoom_by(1.1)).pack(pady=2)
+        tk.Button(side_col, text="축소", width=4, command=lambda: self.crop_canvas.zoom_by(1 / 1.1)).pack(pady=2)
+
+        # 상/하/좌/우 이동 버튼: 마우스 드래그로는 4px 같은 미세 이동이 어려워서,
+        # 정확한 픽셀 단위 이동을 위해 버튼으로 제공합니다.
+        PAN_STEP = 4
+        pan_grid = tk.Frame(side_col)
+        pan_grid.pack(pady=(16, 2))
+        tk.Button(pan_grid, text="\u25b2", width=3,
+                  command=lambda: self.crop_canvas.pan_by(0, PAN_STEP)).grid(row=0, column=1)
+        tk.Button(pan_grid, text="\u25c0", width=3,
+                  command=lambda: self.crop_canvas.pan_by(PAN_STEP, 0)).grid(row=1, column=0)
+        tk.Button(pan_grid, text="\u25b6", width=3,
+                  command=lambda: self.crop_canvas.pan_by(-PAN_STEP, 0)).grid(row=1, column=2)
+        tk.Button(pan_grid, text="\u25bc", width=3,
+                  command=lambda: self.crop_canvas.pan_by(0, -PAN_STEP)).grid(row=2, column=1)
+        # (이동 버튼은 "틀 안에서 이미지가 움직이는" 방향이라, 위 버튼을
+        # 누르면 이미지가 위로 당겨져서 아래쪽이 더 보이게 됩니다 - 손가락/
+        # 마우스로 위로 쓸어올리는 것과 같은 방향입니다)
 
         # --- 이미지 선택 ---
         pick_row = tk.Frame(parent)
         pick_row.pack(fill="x", pady=4)
         tk.Button(pick_row, text="이미지 선택", command=self._pick_image).pack(fill="x")
 
-        # --- 알고리즘 선택 ---
+        # --- 알고리즘 선택 + 블록디더링/잡티제거 (한 줄) ---
         algo_row = tk.Frame(parent)
         algo_row.pack(pady=4)
         tk.Button(algo_row, text="디더링", command=lambda: self._set_algorithm(ip.Algorithm.DITHER)).pack(side="left", padx=2)
         tk.Button(algo_row, text="Atkinson", command=lambda: self._set_algorithm(ip.Algorithm.ATKINSON)).pack(side="left", padx=2)
         tk.Button(algo_row, text="컬러 그레이딩", command=lambda: self._set_algorithm(ip.Algorithm.COLOR_GRADING)).pack(side="left", padx=2)
+        self.block_dither_btn = tk.Button(algo_row, text=self._block_dither_label(), command=self._toggle_block_dither)
+        self.block_dither_btn.pack(side="left", padx=2)
+        self.despeckle_btn = tk.Button(algo_row, text=self._despeckle_label(), command=self._toggle_despeckle)
+        self.despeckle_btn.pack(side="left", padx=2)
 
         # --- 슬라이더들 ---
         sliders_frame = tk.Frame(parent)
@@ -348,14 +396,6 @@ class App(tk.Tk):
                                       self._on_edge_change)
         self.edge_slider.pack(fill="x", pady=2)
 
-        # --- 토글 버튼 ---
-        toggle_row = tk.Frame(parent)
-        toggle_row.pack(pady=4)
-        self.block_dither_btn = tk.Button(toggle_row, text=self._block_dither_label(), command=self._toggle_block_dither)
-        self.block_dither_btn.pack(side="left", padx=2)
-        self.despeckle_btn = tk.Button(toggle_row, text=self._despeckle_label(), command=self._toggle_despeckle)
-        self.despeckle_btn.pack(side="left", padx=2)
-
         ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=8)
 
         # --- 포트 선택 + 쓰기 ---
@@ -369,10 +409,19 @@ class App(tk.Tk):
         if ports:
             self.port_combo.current(0)
         self.port_combo.pack(side="left", fill="x", expand=True, padx=4)
-        tk.Button(port_row, text="새로고침", command=self._refresh_ports).pack(side="left")
+        tk.Button(port_row, text="새로고침", command=self._refresh_ports_and_restart_monitor).pack(side="left")
 
-        self.start_btn = tk.Button(parent, text="쓰기 시작", command=self._start_write, font=("", 11, "bold"))
+        # 쓰기 버튼: 배지가 안 올라와 있으면 비활성 + "배지를 리더에 태그해주세요"로
+        # 보이고, 배지가 감지되면 활성화되면서 "쓰기 시작"으로 바뀝니다.
+        # (백그라운드 감시 스레드가 _set_card_present()로 이 상태를 갱신합니다)
+        self.start_btn = tk.Button(parent, text="배지를 리더에 태그해주세요", command=self._start_write,
+                                    font=("", 11, "bold"), state="disabled")
         self.start_btn.pack(fill="x", pady=6)
+
+        # 전송 완료 시 잠깐 나타났다가 사라지는 안내 배너 (제조사 앱과 동일한 느낌)
+        self.success_banner = tk.Label(parent, text="", fg="white", bg="#2e7d32",
+                                        font=("", 11, "bold"), pady=6)
+        # 평소엔 pack 안 해둬서 공간을 차지하지 않다가, 완료 시에만 pack합니다.
 
         self.status_label = tk.Label(parent, text="이미지를 선택해주세요", wraplength=380, justify="left", anchor="w")
         self.status_label.pack(fill="x", pady=4)
@@ -498,6 +547,10 @@ class App(tk.Tk):
         if ports:
             self.port_combo.current(0)
 
+    def _refresh_ports_and_restart_monitor(self):
+        self._refresh_ports()
+        self._restart_monitor()
+
     def _copy_log(self):
         self.clipboard_clear()
         self.clipboard_append(self.log_text.get("1.0", "end"))
@@ -515,28 +568,84 @@ class App(tk.Tk):
             pass
         self.after(50, self._poll_log_queue)
 
+    # ------------------------------------------------------------------
+    # 배지 상시 감시 (백그라운드) - 버튼 문구/활성화 상태를 실시간으로 갱신
+    # ------------------------------------------------------------------
+    def _restart_monitor(self):
+        """현재 선택된 포트로 배지 감시를 (재)시작합니다. 포트가 바뀌면 호출됩니다."""
+        if not self.port_var.get():
+            return
+        port_device = self.port_var.get().split(" ")[0]
+        self._monitor_token += 1
+        my_token = self._monitor_token
+        self._monitor_port = port_device
+        self._set_card_present(False)
+        self._monitor_thread = threading.Thread(target=self._monitor_loop, args=(port_device, my_token), daemon=True)
+        self._monitor_thread.start()
+
+    def _monitor_loop(self, port_device: str, token: int):
+        """
+        포트를 한 번 연결해서 앱이 켜져있는 동안 계속 유지하면서, 배지가
+        올라오는지 반복적으로 확인합니다. 배지가 감지되면 쓰기 버튼을
+        활성화해두고, 사용자가 버튼을 누르면(그 순간 _write_requested가
+        set됨) 이미 확인해둔 스펙으로 바로 전송을 시작합니다.
+        """
+        writer = NfcSerialWriter(port_device, log_callback=self._append_log)
+        try:
+            writer.connect()
+        except Exception as e:
+            self._append_log(f"!! 포트 연결 실패: {e}")
+            return
+        try:
+            while token == self._monitor_token:
+                try:
+                    spec = writer.wait_for_card(timeout_sec=2.0, stop_flag=lambda: token != self._monitor_token)
+                except NfcReaderError:
+                    if token != self._monitor_token:
+                        break
+                    self._set_card_present(False)
+                    continue
+
+                if token != self._monitor_token:
+                    break
+
+                self._set_card_present(True)
+                self._write_requested.clear()
+                triggered = self._write_requested.wait(timeout=600)  # 사용자가 누를 때까지 충분히 대기
+
+                if token != self._monitor_token:
+                    break
+
+                if triggered:
+                    self._perform_send(writer, spec)
+
+                self._set_card_present(False)
+        finally:
+            writer.close()
+
+    def _set_card_present(self, present: bool):
+        self._card_present = present
+
+        def update():
+            if present:
+                self.start_btn.config(text="쓰기 시작", state="normal")
+            else:
+                self.start_btn.config(text="배지를 리더에 태그해주세요", state="disabled")
+
+        self.after(0, update)
+
     def _start_write(self):
         if self.processed_array is None:
             messagebox.showwarning("안내", "먼저 이미지를 선택해주세요")
             return
-        if not self.port_var.get():
-            messagebox.showwarning("안내", "포트를 선택해주세요")
-            return
-        port_device = self.port_var.get().split(" ")[0]
-        self.start_btn.config(state="disabled")
-        self._stop_flag = False
-        self._writer_thread = threading.Thread(target=self._write_worker, args=(port_device,), daemon=True)
-        self._writer_thread.start()
+        if not self._card_present:
+            return  # 버튼이 비활성화돼 있어야 정상이라 보통 여기까지 안 옵니다
+        self.start_btn.config(state="disabled", text="전송 중...")
+        self._write_requested.set()
 
-    def _write_worker(self, port_device: str):
-        """백그라운드 스레드에서 실행됩니다. UI 위젯을 직접 건드리지 않고,
-        _append_log()로 큐에 메시지만 넣습니다 (tkinter는 스레드 안전하지 않음)."""
-        writer = NfcSerialWriter(port_device, log_callback=self._append_log)
+    def _perform_send(self, writer: NfcSerialWriter, spec):
+        """감시 스레드 안에서 호출됩니다 (이미 확인된 spec으로 바로 전송)."""
         try:
-            writer.connect()
-            self._set_status("배지를 리더에 태그해주세요...")
-            spec = writer.wait_for_card(timeout_sec=60.0, stop_flag=lambda: self._stop_flag)
-
             # 실측 결과, 배지가 NDEF로 알려주는 'H'/'W'는 우리가 흔히 쓰는
             # "높이/폭" 의미와 반대로 대응됩니다 (예: 실제 400x600 배지가
             # H=400&W=600으로 옴 -> H가 가로, W가 세로). 그래서 여기서는
@@ -555,15 +664,13 @@ class App(tk.Tk):
 
             writer.send_image(spec, image_bytes, done_timeout_sec=180.0)
             self._set_status("전송 완료! 배지 화면을 확인해주세요.")
+            self._show_success_banner("이미지 쓰기가 완료되었습니다!")
         except NfcReaderError as e:
             self._append_log(f"!! 오류: {e}")
             self._set_status(f"실패: {e}")
         except Exception as e:
             self._append_log(f"!! 예외: {e}")
             self._set_status(f"실패: {e}")
-        finally:
-            writer.close()
-            self._enable_start_button()
 
     def _reprocess_for_spec(self, w, h):
         rect = self.crop_canvas.get_visible_rect()
@@ -578,8 +685,17 @@ class App(tk.Tk):
         self._append_log(f"[상태] {text}")
         self.after(0, lambda: self.status_label.config(text=text))
 
-    def _enable_start_button(self):
-        self.after(0, lambda: self.start_btn.config(state="normal"))
+    def _show_success_banner(self, text, duration_ms=4000):
+        """제조사 앱처럼, 전송 완료 안내가 잠깐 떴다가 자동으로 사라집니다."""
+        def show():
+            self.success_banner.config(text=text)
+            self.success_banner.pack(fill="x", pady=4, before=self.status_label)
+            self.after(duration_ms, hide)
+
+        def hide():
+            self.success_banner.pack_forget()
+
+        self.after(0, show)
 
 
 if __name__ == "__main__":
