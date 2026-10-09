@@ -18,6 +18,8 @@ from PIL import Image
 
 from color_palette import SPECTRA6, PALETTE_RGB_ARRAY, PALETTE_CODE_ARRAY, nearest_color_indices_bulk, WEIGHT_R, WEIGHT_G, WEIGHT_B
 
+from numba import njit  # 디더링의 픽셀 단위 반복문을 기계어 수준으로 컴파일해서 고속화
+
 CLEAN_THRESHOLD_MIN = 0
 CLEAN_THRESHOLD_MAX = 20000
 
@@ -165,70 +167,200 @@ def color_grading(img: np.ndarray) -> np.ndarray:
     return PALETTE_RGB_ARRAY[idx].astype(np.uint8)
 
 
-def floyd_steinberg(img: np.ndarray, noise_threshold: int = 0) -> np.ndarray:
-    """
-    Floyd-Steinberg 디더링 (+ 노이즈 감소 옵션).
-    numpy로 픽셀 전체를 한 번에 처리할 수 없는(이전 픽셀 결과에 의존하는)
-    알고리즘이라 파이썬 반복문을 쓰지만, float32 버퍼를 미리 numpy 배열로
-    잡아두고 팔레트 거리 계산만 numpy로 하는 식으로 최대한 최적화했습니다.
-    """
-    h, w, _ = img.shape
-    buf = img.astype(np.float32).copy()
+@njit(cache=True)
+def _floyd_steinberg_core(buf: np.ndarray, palette: np.ndarray, weights: np.ndarray, noise_threshold: float) -> np.ndarray:
+    """Floyd-Steinberg의 실제 픽셀 반복문. Numba가 이 함수를 최초 호출 시
+    기계어로 컴파일해두기 때문에, 그 뒤로는 순수 파이썬 반복문보다
+    훨씬(보통 수십~수백 배) 빠르게 돕니다. 로직은 이전 파이썬 버전과 동일합니다."""
+    h = buf.shape[0]
+    w = buf.shape[1]
     out = np.zeros((h, w, 3), dtype=np.uint8)
-
-    palette = PALETTE_RGB_ARRAY.astype(np.float32)  # (6, 3)
-    weights = np.array([WEIGHT_R, WEIGHT_G, WEIGHT_B], dtype=np.float32)
+    n_colors = palette.shape[0]
 
     for y in range(h):
         for x in range(w):
-            old = buf[y, x]
-            dist = np.sum((palette - old) ** 2 * weights, axis=1)
-            idx = int(np.argmin(dist))
-            matched = palette[idx]
-            out[y, x] = matched.astype(np.uint8)
+            o0 = buf[y, x, 0]
+            o1 = buf[y, x, 1]
+            o2 = buf[y, x, 2]
 
-            err = old - matched
-            if np.sum(err * err) <= noise_threshold:
-                continue
+            best_idx = 0
+            best_dist = 1e30
+            for i in range(n_colors):
+                d0 = o0 - palette[i, 0]
+                d1 = o1 - palette[i, 1]
+                d2 = o2 - palette[i, 2]
+                dist = weights[0] * d0 * d0 + weights[1] * d1 * d1 + weights[2] * d2 * d2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
+
+            m0 = palette[best_idx, 0]
+            m1 = palette[best_idx, 1]
+            m2 = palette[best_idx, 2]
+            out[y, x, 0] = np.uint8(m0)
+            out[y, x, 1] = np.uint8(m1)
+            out[y, x, 2] = np.uint8(m2)
+
+            e0 = o0 - m0
+            e1 = o1 - m1
+            e2 = o2 - m2
+            # 노이즈 감소 기준은 (가중치 없는) 단순 제곱합으로 판단 (기존과 동일)
+            if (e0 * e0 + e1 * e1 + e2 * e2) <= noise_threshold:
+                e0 = 0.0
+                e1 = 0.0
+                e2 = 0.0
 
             if x + 1 < w:
-                buf[y, x + 1] += err * (7 / 16)
+                buf[y, x + 1, 0] += e0 * (7.0 / 16.0)
+                buf[y, x + 1, 1] += e1 * (7.0 / 16.0)
+                buf[y, x + 1, 2] += e2 * (7.0 / 16.0)
             if y + 1 < h:
                 if x - 1 >= 0:
-                    buf[y + 1, x - 1] += err * (3 / 16)
-                buf[y + 1, x] += err * (5 / 16)
+                    buf[y + 1, x - 1, 0] += e0 * (3.0 / 16.0)
+                    buf[y + 1, x - 1, 1] += e1 * (3.0 / 16.0)
+                    buf[y + 1, x - 1, 2] += e2 * (3.0 / 16.0)
+                buf[y + 1, x, 0] += e0 * (5.0 / 16.0)
+                buf[y + 1, x, 1] += e1 * (5.0 / 16.0)
+                buf[y + 1, x, 2] += e2 * (5.0 / 16.0)
                 if x + 1 < w:
-                    buf[y + 1, x + 1] += err * (1 / 16)
+                    buf[y + 1, x + 1, 0] += e0 * (1.0 / 16.0)
+                    buf[y + 1, x + 1, 1] += e1 * (1.0 / 16.0)
+                    buf[y + 1, x + 1, 2] += e2 * (1.0 / 16.0)
+    return out
+
+
+def floyd_steinberg(img: np.ndarray, noise_threshold: int = 0) -> np.ndarray:
+    """Floyd-Steinberg 디더링 (+ 노이즈 감소 옵션). 실제 반복문은 Numba로 컴파일됩니다."""
+    buf = img.astype(np.float64).copy()
+    palette = PALETTE_RGB_ARRAY.astype(np.float64)
+    weights = np.array([WEIGHT_R, WEIGHT_G, WEIGHT_B], dtype=np.float64)
+    return _floyd_steinberg_core(buf, palette, weights, float(noise_threshold))
+
+
+@njit(cache=True)
+def _atkinson_core(buf: np.ndarray, palette: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Atkinson의 실제 픽셀 반복문 (Numba 컴파일). 로직은 이전과 동일합니다."""
+    h = buf.shape[0]
+    w = buf.shape[1]
+    out = np.zeros((h, w, 3), dtype=np.uint8)
+    n_colors = palette.shape[0]
+
+    ndx = np.array([1, 2, -1, 0, 1, 0])
+    ndy = np.array([0, 0, 1, 1, 1, 2])
+
+    for y in range(h):
+        for x in range(w):
+            o0 = buf[y, x, 0]
+            o1 = buf[y, x, 1]
+            o2 = buf[y, x, 2]
+
+            best_idx = 0
+            best_dist = 1e30
+            for i in range(n_colors):
+                d0 = o0 - palette[i, 0]
+                d1 = o1 - palette[i, 1]
+                d2 = o2 - palette[i, 2]
+                dist = weights[0] * d0 * d0 + weights[1] * d1 * d1 + weights[2] * d2 * d2
+                if dist < best_dist:
+                    best_dist = dist
+                    best_idx = i
+
+            m0 = palette[best_idx, 0]
+            m1 = palette[best_idx, 1]
+            m2 = palette[best_idx, 2]
+            out[y, x, 0] = np.uint8(m0)
+            out[y, x, 1] = np.uint8(m1)
+            out[y, x, 2] = np.uint8(m2)
+
+            # 제조사 코드와 동일하게, 확산되는 오차는 채널별로 정수로 내림(floor) 처리
+            e0 = np.floor((o0 - m0) / 8.0)
+            e1 = np.floor((o1 - m1) / 8.0)
+            e2 = np.floor((o2 - m2) / 8.0)
+
+            for k in range(6):
+                nx = x + ndx[k]
+                ny = y + ndy[k]
+                if 0 <= nx < w and 0 <= ny < h:
+                    buf[ny, nx, 0] += e0
+                    buf[ny, nx, 1] += e1
+                    buf[ny, nx, 2] += e2
     return out
 
 
 def atkinson(img: np.ndarray) -> np.ndarray:
-    """
-    Atkinson 디더링. 오차의 3/4만 6개 이웃에 1/8씩 나눠주고 나머지는 버립니다.
-    제조사 코드와 동일하게, 확산되는 오차는 채널별로 정수로 내림(floor)
-    처리합니다 (부동소수점을 그대로 누적하지 않음).
-    """
-    h, w, _ = img.shape
-    buf = img.astype(np.float32).copy()
-    out = np.zeros((h, w, 3), dtype=np.uint8)
-    palette = PALETTE_RGB_ARRAY.astype(np.float32)
-    weights = np.array([WEIGHT_R, WEIGHT_G, WEIGHT_B], dtype=np.float32)
+    """Atkinson 디더링. 오차의 3/4만 6개 이웃에 1/8씩 나눠주고 나머지는 버립니다."""
+    buf = img.astype(np.float64).copy()
+    palette = PALETTE_RGB_ARRAY.astype(np.float64)
+    weights = np.array([WEIGHT_R, WEIGHT_G, WEIGHT_B], dtype=np.float64)
+    return _atkinson_core(buf, palette, weights)
 
-    neighbors = [(1, 0), (2, 0), (-1, 1), (0, 1), (1, 1), (0, 2)]
+
+@njit(cache=True)
+def _despeckle_core(img: np.ndarray, min_same_neighbors: int) -> np.ndarray:
+    """잡티 제거의 실제 반복문 (Numba 컴파일). 가장자리는 테두리 픽셀을
+    그대로 복제하는 방식(edge padding)으로 처리해서 이전과 동일합니다."""
+    h = img.shape[0]
+    w = img.shape[1]
+    out = img.copy()
+
+    dy8 = np.array([-1, -1, -1, 0, 0, 1, 1, 1])
+    dx8 = np.array([-1, 0, 1, -1, 1, -1, 0, 1])
 
     for y in range(h):
         for x in range(w):
-            old = buf[y, x]
-            dist = np.sum((palette - old) ** 2 * weights, axis=1)
-            idx = int(np.argmin(dist))
-            matched = palette[idx]
-            out[y, x] = matched.astype(np.uint8)
+            s0 = img[y, x, 0]
+            s1 = img[y, x, 1]
+            s2 = img[y, x, 2]
 
-            err = np.floor((old - matched) / 8.0)
-            for dx, dy in neighbors:
-                nx, ny = x + dx, y + dy
-                if 0 <= nx < w and 0 <= ny < h:
-                    buf[ny, nx] += err
+            same = 0
+            cnt_r = np.zeros(8, dtype=np.uint8)
+            cnt_g = np.zeros(8, dtype=np.uint8)
+            cnt_b = np.zeros(8, dtype=np.uint8)
+            cnt_n = np.zeros(8, dtype=np.int64)
+            n_unique = 0
+
+            for k in range(8):
+                ny = y + dy8[k]
+                nx = x + dx8[k]
+                if ny < 0:
+                    ny = 0
+                elif ny >= h:
+                    ny = h - 1
+                if nx < 0:
+                    nx = 0
+                elif nx >= w:
+                    nx = w - 1
+
+                r = img[ny, nx, 0]
+                g = img[ny, nx, 1]
+                b = img[ny, nx, 2]
+                if r == s0 and g == s1 and b == s2:
+                    same += 1
+
+                found = -1
+                for u in range(n_unique):
+                    if cnt_r[u] == r and cnt_g[u] == g and cnt_b[u] == b:
+                        found = u
+                        break
+                if found >= 0:
+                    cnt_n[found] += 1
+                else:
+                    cnt_r[n_unique] = r
+                    cnt_g[n_unique] = g
+                    cnt_b[n_unique] = b
+                    cnt_n[n_unique] = 1
+                    n_unique += 1
+
+            if same < min_same_neighbors:
+                best_u = 0
+                best_count = -1
+                for u in range(n_unique):
+                    if cnt_n[u] > best_count:
+                        best_count = cnt_n[u]
+                        best_u = u
+                out[y, x, 0] = cnt_r[best_u]
+                out[y, x, 1] = cnt_g[best_u]
+                out[y, x, 2] = cnt_b[best_u]
     return out
 
 
@@ -237,26 +369,7 @@ def despeckle(img: np.ndarray, min_same_neighbors: int = 2) -> np.ndarray:
     양자화가 끝난 결과에서, 8이웃 중 자신과 같은 색이 min_same_neighbors개
     미만인 고립된 픽셀을 찾아 이웃 중 가장 흔한 색으로 바꿉니다.
     """
-    h, w, _ = img.shape
-    out = img.copy()
-    padded = np.pad(img, ((1, 1), (1, 1), (0, 0)), mode="edge")
-
-    offsets = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-
-    for y in range(h):
-        for x in range(w):
-            self_color = tuple(img[y, x])
-            counts = {}
-            same = 0
-            for dy, dx in offsets:
-                nb = tuple(padded[y + 1 + dy, x + 1 + dx])
-                counts[nb] = counts.get(nb, 0) + 1
-                if nb == self_color:
-                    same += 1
-            if same < min_same_neighbors:
-                best = max(counts.items(), key=lambda kv: kv[1])[0]
-                out[y, x] = best
-    return out
+    return _despeckle_core(img.astype(np.uint8), int(min_same_neighbors))
 
 
 def color_transition_density(img: np.ndarray) -> float:
