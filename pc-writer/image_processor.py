@@ -219,22 +219,36 @@ def _floyd_steinberg_core(buf: np.ndarray, palette: np.ndarray, weights: np.ndar
                 e1 = 0.0
                 e2 = 0.0
 
+            # Atkinson과 동일하게, 확산된 값을 더할 때마다 즉시 0~255로
+            # 잘라내서 부동소수점 누적값이 범위를 벗어나 표류하지 않게 합니다.
             if x + 1 < w:
-                buf[y, x + 1, 0] += e0 * (7.0 / 16.0)
-                buf[y, x + 1, 1] += e1 * (7.0 / 16.0)
-                buf[y, x + 1, 2] += e2 * (7.0 / 16.0)
+                v0 = buf[y, x + 1, 0] + e0 * (7.0 / 16.0)
+                v1 = buf[y, x + 1, 1] + e1 * (7.0 / 16.0)
+                v2 = buf[y, x + 1, 2] + e2 * (7.0 / 16.0)
+                buf[y, x + 1, 0] = 0.0 if v0 < 0.0 else (255.0 if v0 > 255.0 else v0)
+                buf[y, x + 1, 1] = 0.0 if v1 < 0.0 else (255.0 if v1 > 255.0 else v1)
+                buf[y, x + 1, 2] = 0.0 if v2 < 0.0 else (255.0 if v2 > 255.0 else v2)
             if y + 1 < h:
                 if x - 1 >= 0:
-                    buf[y + 1, x - 1, 0] += e0 * (3.0 / 16.0)
-                    buf[y + 1, x - 1, 1] += e1 * (3.0 / 16.0)
-                    buf[y + 1, x - 1, 2] += e2 * (3.0 / 16.0)
-                buf[y + 1, x, 0] += e0 * (5.0 / 16.0)
-                buf[y + 1, x, 1] += e1 * (5.0 / 16.0)
-                buf[y + 1, x, 2] += e2 * (5.0 / 16.0)
+                    v0 = buf[y + 1, x - 1, 0] + e0 * (3.0 / 16.0)
+                    v1 = buf[y + 1, x - 1, 1] + e1 * (3.0 / 16.0)
+                    v2 = buf[y + 1, x - 1, 2] + e2 * (3.0 / 16.0)
+                    buf[y + 1, x - 1, 0] = 0.0 if v0 < 0.0 else (255.0 if v0 > 255.0 else v0)
+                    buf[y + 1, x - 1, 1] = 0.0 if v1 < 0.0 else (255.0 if v1 > 255.0 else v1)
+                    buf[y + 1, x - 1, 2] = 0.0 if v2 < 0.0 else (255.0 if v2 > 255.0 else v2)
+                v0 = buf[y + 1, x, 0] + e0 * (5.0 / 16.0)
+                v1 = buf[y + 1, x, 1] + e1 * (5.0 / 16.0)
+                v2 = buf[y + 1, x, 2] + e2 * (5.0 / 16.0)
+                buf[y + 1, x, 0] = 0.0 if v0 < 0.0 else (255.0 if v0 > 255.0 else v0)
+                buf[y + 1, x, 1] = 0.0 if v1 < 0.0 else (255.0 if v1 > 255.0 else v1)
+                buf[y + 1, x, 2] = 0.0 if v2 < 0.0 else (255.0 if v2 > 255.0 else v2)
                 if x + 1 < w:
-                    buf[y + 1, x + 1, 0] += e0 * (1.0 / 16.0)
-                    buf[y + 1, x + 1, 1] += e1 * (1.0 / 16.0)
-                    buf[y + 1, x + 1, 2] += e2 * (1.0 / 16.0)
+                    v0 = buf[y + 1, x + 1, 0] + e0 * (1.0 / 16.0)
+                    v1 = buf[y + 1, x + 1, 1] + e1 * (1.0 / 16.0)
+                    v2 = buf[y + 1, x + 1, 2] + e2 * (1.0 / 16.0)
+                    buf[y + 1, x + 1, 0] = 0.0 if v0 < 0.0 else (255.0 if v0 > 255.0 else v0)
+                    buf[y + 1, x + 1, 1] = 0.0 if v1 < 0.0 else (255.0 if v1 > 255.0 else v1)
+                    buf[y + 1, x + 1, 2] = 0.0 if v2 < 0.0 else (255.0 if v2 > 255.0 else v2)
     return out
 
 
@@ -286,13 +300,22 @@ def _atkinson_core(buf: np.ndarray, palette: np.ndarray, weights: np.ndarray) ->
             e1 = np.floor((o1 - m1) / 8.0)
             e2 = np.floor((o2 - m2) / 8.0)
 
+            # 제조사 코드(plusTruncate)와 동일하게, 확산된 값을 이웃에 더할
+            # 때마다 즉시 0~255로 잘라냅니다. 저희가 이전에 쓰던 방식(끝까지
+            # 안 자르고 부동소수점으로 계속 누적)은 균일한 영역(하늘 등)에서
+            # 여러 오차가 겹쳐 쌓이며 0~255 범위를 벗어나 표류하기 쉬워서,
+            # "어느 팔레트 색이 더 가까운가" 판단이 제조사보다 더 불안정하게
+            # 흔들리는 원인이었습니다.
             for k in range(6):
                 nx = x + ndx[k]
                 ny = y + ndy[k]
                 if 0 <= nx < w and 0 <= ny < h:
-                    buf[ny, nx, 0] += e0
-                    buf[ny, nx, 1] += e1
-                    buf[ny, nx, 2] += e2
+                    v0 = buf[ny, nx, 0] + e0
+                    v1 = buf[ny, nx, 1] + e1
+                    v2 = buf[ny, nx, 2] + e2
+                    buf[ny, nx, 0] = 0.0 if v0 < 0.0 else (255.0 if v0 > 255.0 else v0)
+                    buf[ny, nx, 1] = 0.0 if v1 < 0.0 else (255.0 if v1 > 255.0 else v1)
+                    buf[ny, nx, 2] = 0.0 if v2 < 0.0 else (255.0 if v2 > 255.0 else v2)
     return out
 
 
