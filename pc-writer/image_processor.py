@@ -94,7 +94,16 @@ def enhance_contrast_and_saturation(img: np.ndarray, contrast_boost: float, satu
     """
     명암비(contrast)와 채도(saturation)를 동시에 끌어올립니다.
     명암비는 128을 기준으로 값을 더 벌리고, 채도는 HSV로 변환해서 S값만 올립니다.
+
+    둘 다 1.0(보정 없음)이면 이 함수를 그대로 건너뜁니다. RGB->HSV->RGB
+    왕복 변환은 수학적으로는 항등 변환이어야 하지만, 부동소수점 반올림
+    때문에 실제로는 픽셀의 40% 이상이 채널당 ±1만큼 미세하게 바뀌는 걸
+    확인했습니다. 디더링은 이런 미세한 차이로도 "어느 팔레트 색이 더
+    가까운가" 판단이 뒤집힐 수 있어서, 불필요한 노이즈의 원인이었습니다.
     """
+    if contrast_boost == 1.0 and saturation_boost == 1.0:
+        return img
+
     f = img.astype(np.float32)
     f = (f - 128.0) * contrast_boost + 128.0
     f = np.clip(f, 0, 255).astype(np.uint8)
