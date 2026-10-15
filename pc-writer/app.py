@@ -9,6 +9,7 @@ NFC 배지 쓰기 PC 프로그램.
 """
 
 import queue
+import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -699,5 +700,22 @@ class App(tk.Tk):
 
 
 if __name__ == "__main__":
+    # Tkinter는 기본적으로 윈도우에 "고해상도 화면 인식(DPI-aware)"이라고
+    # 알리지 않습니다. 그러면 윈도우가 디스플레이 배율이 100%여도 창을
+    # 비트맵으로 가상 스케일링해서 그리는 경우가 있는데, 이때 반올림
+    # 때문에 요청한 픽셀 크기(예: 400x600 캔버스)가 화면에는 399x599처럼
+    # 1px 정도 다르게 그려질 수 있습니다. 아래 코드로 윈도우에 "내가
+    # 직접 정확한 픽셀 단위로 그릴 테니 건드리지 말아달라"고 미리
+    # 알려서, 요청한 크기 그대로 정확히 렌더링되게 합니다.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            ctypes.windll.shcore.SetProcessDpiAwareness(1)  # PROCESS_SYSTEM_DPI_AWARE
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()  # 더 오래된 윈도우용 대안
+            except Exception:
+                pass
+
     app = App()
     app.mainloop()
