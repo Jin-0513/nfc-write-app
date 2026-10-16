@@ -38,8 +38,13 @@ class CropCanvas(tk.Canvas):
     """
 
     def __init__(self, master, width=CANVAS_W, height=CANVAS_H, **kwargs):
-        super().__init__(master, width=width, height=height, bg="#dddddd", highlightthickness=1,
-                          highlightbackground="#888888", **kwargs)
+        # 테두리(highlightthickness/border)를 완전히 없앴습니다. 윈도우에서
+        # 테두리가 있으면 화면 캡처 시 콘텐츠가 요청한 크기(400x600)보다
+        # 1px씩 작게 캡처되는 현상이 있어서, 테두리와 콘텐츠 경계가
+        # 헷갈릴 여지 자체를 없애기 위함입니다. 이제 캔버스 전체 =
+        # 콘텐츠 400x600 그대로입니다.
+        super().__init__(master, width=width, height=height, bg="#dddddd",
+                          highlightthickness=0, borderwidth=0, **kwargs)
         self.canvas_w = width
         self.canvas_h = height
 
