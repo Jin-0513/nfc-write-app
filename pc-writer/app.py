@@ -463,25 +463,6 @@ class App(tk.Tk):
             return
         self.crop_canvas.set_image(self.original_pil_image)
         self.status_label.config(text="이미지 로드됨. 배지를 리더에 태그하고 '쓰기 시작'을 눌러주세요")
-        # 위젯이 실제로 화면에 그려진 뒤(after로 한 틱 늦춰서) 크기를 재서 로그에 남깁니다.
-        self.after(200, self._log_canvas_diagnostics)
-
-    def _log_canvas_diagnostics(self):
-        """
-        Tkinter 자신이 '내가 실제로 이만큼 그렸다'고 보고하는 크기를 그대로
-        로그에 남깁니다. 스크린샷을 수동으로 잘라서 재는 것보다 훨씬
-        정확한 기준점입니다 - 여기 찍힌 숫자가 400/600이 아니라면, 그건
-        Tkinter 내부/Windows 렌더링 단계에서 실제로 다르게 그려지고
-        있다는 확실한 증거가 됩니다.
-        """
-        c = self.crop_canvas
-        self._append_log(
-            f"[진단] 요청한 캔버스 크기: {c.canvas_w}x{c.canvas_h} / "
-            f"Tk winfo 크기: {c.winfo_width()}x{c.winfo_height()} / "
-            f"표시 중인 PhotoImage 크기: "
-            f"{(c._tk_image.width() if c._tk_image else '없음')}x"
-            f"{(c._tk_image.height() if c._tk_image else '없음')}"
-        )
 
     def _threshold_to_percent(self, threshold):
         span = ip.CLEAN_THRESHOLD_MAX - ip.CLEAN_THRESHOLD_MIN
