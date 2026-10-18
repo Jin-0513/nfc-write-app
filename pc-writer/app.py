@@ -285,8 +285,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("NFC 배지 쓰기")
-        self.geometry("980x985")
-        self.minsize(980, 985)
+        self.geometry("950x950")
+        self.minsize(950, 950)
 
         self.original_pil_image: Image.Image | None = None
         self.processed_array: np.ndarray | None = None
@@ -370,17 +370,6 @@ class App(tk.Tk):
         pick_row.pack(fill="x", pady=4)
         tk.Button(pick_row, text="이미지 선택", command=self._pick_image).pack(fill="x")
 
-        # --- 알고리즘 선택 + 블록디더링/잡티제거 (한 줄) ---
-        algo_row = tk.Frame(parent)
-        algo_row.pack(pady=4)
-        tk.Button(algo_row, text="디더링", command=lambda: self._set_algorithm(ip.Algorithm.DITHER)).pack(side="left", padx=2)
-        tk.Button(algo_row, text="Atkinson", command=lambda: self._set_algorithm(ip.Algorithm.ATKINSON)).pack(side="left", padx=2)
-        tk.Button(algo_row, text="컬러 그레이딩", command=lambda: self._set_algorithm(ip.Algorithm.COLOR_GRADING)).pack(side="left", padx=2)
-        self.block_dither_btn = tk.Button(algo_row, text=self._block_dither_label(), command=self._toggle_block_dither)
-        self.block_dither_btn.pack(side="left", padx=2)
-        self.despeckle_btn = tk.Button(algo_row, text=self._despeckle_label(), command=self._toggle_despeckle)
-        self.despeckle_btn.pack(side="left", padx=2)
-
         # --- 슬라이더들 ---
         sliders_frame = tk.Frame(parent)
         sliders_frame.pack(fill="x", pady=4)
@@ -390,11 +379,11 @@ class App(tk.Tk):
                                        self._on_clean_change)
         self.clean_slider.pack(fill="x", pady=2)
 
-        self.contrast_slider = SliderRow(sliders_frame, "명암비", 100, 200, self.contrast_percent, 1,
+        self.contrast_slider = SliderRow(sliders_frame, "명암비", 0, 200, self.contrast_percent, 1,
                                           self._on_contrast_change)
         self.contrast_slider.pack(fill="x", pady=2)
 
-        self.saturation_slider = SliderRow(sliders_frame, "채도", 100, 200, self.saturation_percent, 1,
+        self.saturation_slider = SliderRow(sliders_frame, "채도", 0, 200, self.saturation_percent, 1,
                                             self._on_saturation_change)
         self.saturation_slider.pack(fill="x", pady=2)
 
@@ -471,26 +460,6 @@ class App(tk.Tk):
     def _percent_to_threshold(self, percent):
         span = ip.CLEAN_THRESHOLD_MAX - ip.CLEAN_THRESHOLD_MIN
         return ip.CLEAN_THRESHOLD_MIN + span * percent // 100
-
-    def _block_dither_label(self):
-        return f"블록 디더링: {'켬' if self.use_block_dither else '끔'}"
-
-    def _despeckle_label(self):
-        return f"잡티 제거: {'켬' if self.use_despeckle else '끔'}"
-
-    def _toggle_block_dither(self):
-        self.use_block_dither = not self.use_block_dither
-        self.block_dither_btn.config(text=self._block_dither_label())
-        self._schedule_preview_update()
-
-    def _toggle_despeckle(self):
-        self.use_despeckle = not self.use_despeckle
-        self.despeckle_btn.config(text=self._despeckle_label())
-        self._schedule_preview_update()
-
-    def _set_algorithm(self, algo):
-        self.algorithm = algo
-        self._schedule_preview_update()
 
     def _on_clean_change(self, percent):
         self.clean_threshold = self._percent_to_threshold(percent)
