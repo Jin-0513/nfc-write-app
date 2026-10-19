@@ -285,8 +285,10 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("NFC 배지 쓰기")
-        self.geometry("950x950")
-        self.minsize(950, 950)
+        # 실제로 그려지는 창 크기가 요청값보다 약간(가로 +2px) 크게 나오는
+        # 것을 확인해서, 최종 결과가 950x950이 되도록 가로를 948로 보정
+        self.geometry("948x950")
+        self.minsize(948, 950)
 
         self.original_pil_image: Image.Image | None = None
         self.processed_array: np.ndarray | None = None
@@ -427,7 +429,10 @@ class App(tk.Tk):
         log_frame = tk.Frame(parent)
         log_frame.pack(fill="both", expand=True)
 
-        self.log_text = tk.Text(log_frame, wrap="word")
+        # height를 안 정해주면 Tk 기본값(24줄)이 적용되는데, 이게 창을
+        # 세로로 억지로 키우는 원인이었습니다. 작은 값을 기본으로 주고,
+        # fill="both", expand=True로 실제로는 남는 공간만큼 커지게 합니다.
+        self.log_text = tk.Text(log_frame, wrap="word", height=5)
         scrollbar = tk.Scrollbar(log_frame, command=self.log_text.yview)
         self.log_text.config(yscrollcommand=scrollbar.set)
         self.log_text.pack(side="left", fill="both", expand=True)
