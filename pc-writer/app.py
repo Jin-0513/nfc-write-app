@@ -316,6 +316,15 @@ class App(tk.Tk):
         self._log_queue: "queue.Queue[str]" = queue.Queue()
 
         self._build_ui()
+
+        # 위젯을 다 만들고 나면 Tk가 "내용물이 이만큼 필요하다"고 판단해서
+        # geometry()로 지정한 크기보다 창을 더 키워버리는 경우가 있습니다
+        # (pack 전파 때문에, 특히 세로 방향에서 두드러졌습니다). 레이아웃
+        # 계산이 끝난 뒤(update_idletasks) geometry를 한 번 더 강제로
+        # 재적용해서, 요청한 크기(948x950)가 항상 최종 크기가 되게 합니다.
+        self.update_idletasks()
+        self.geometry("948x950")
+
         self.after(50, self._poll_log_queue)
         self.port_combo.bind("<<ComboboxSelected>>", lambda e: self._restart_monitor())
         self._restart_monitor()
