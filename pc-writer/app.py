@@ -317,13 +317,13 @@ class App(tk.Tk):
 
         self._build_ui()
 
-        # 위젯을 다 만들고 나면 Tk가 "내용물이 이만큼 필요하다"고 판단해서
-        # geometry()로 지정한 크기보다 창을 더 키워버리는 경우가 있습니다
-        # (pack 전파 때문에, 특히 세로 방향에서 두드러졌습니다). 레이아웃
-        # 계산이 끝난 뒤(update_idletasks) geometry를 한 번 더 강제로
-        # 재적용해서, 요청한 크기(948x950)가 항상 최종 크기가 되게 합니다.
-        self.update_idletasks()
-        self.geometry("948x950")
+        # __init__ 안(창이 아직 화면에 실제로 뜨기 전)에서 geometry를
+        # 다시 호출하는 것만으로는 부족했습니다 - 창이 실제로 화면에
+        # 매핑된 뒤 윈도우(OS)가 내용물 기준으로 한 번 더 자체적으로
+        # 크기를 재계산해서 키우는 것으로 보입니다. 그래서 창이 실제로
+        # 뜬 다음(after로 지연) geometry를 다시 한번 덮어써서, 그게
+        # 최종 크기로 확실히 남도록 합니다.
+        self.after(150, lambda: self.geometry("948x950"))
 
         self.after(50, self._poll_log_queue)
         self.port_combo.bind("<<ComboboxSelected>>", lambda e: self._restart_monitor())
