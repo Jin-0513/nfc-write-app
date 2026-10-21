@@ -335,15 +335,29 @@ class App(tk.Tk):
     def _build_ui(self):
         root_frame = tk.Frame(self)
         root_frame.pack(fill="both", expand=True)
+        # 안쪽 내용물(특히 왼쪽 패널의 캔버스+컨트롤들)이 "이만큼 필요하다"고
+        # 요구하는 자연 크기가 위로 전파되어 창을 자동으로 키워버리는 걸
+        # 막습니다. geometry()를 아무리 다시 불러도 이게 켜져 있으면
+        # 소용없었습니다 - 이제 root_frame의 크기는 오직 self(창)가 준
+        # 공간만큼으로 고정되고, 안쪽 내용물이 넘치면 그 안에서 눌리거나
+        # 스크롤될 뿐 창 자체를 키우지 않습니다.
+        root_frame.pack_propagate(False)
 
         left = tk.Frame(root_frame)
         left.pack(side="left", fill="y", padx=8, pady=8)
+        left.pack_propagate(False)
 
         right = tk.Frame(root_frame)
         right.pack(side="left", fill="both", expand=True, padx=8, pady=8)
 
         self._build_left_panel(left)
         self._build_right_panel(right)
+
+        # pack_propagate(False)를 쓰면 프레임이 "스스로는" 크기를 안
+        # 정하므로, 명시적으로 크기를 지정해줘야 합니다. 왼쪽 패널은
+        # 틀(400x600) + 그 아래 컨트롤들이 들어갈 만큼, 나머지는 root_frame이
+        # 알아서 채우게 둡니다.
+        left.config(width=430, height=934)
 
     def _build_left_panel(self, parent):
         # --- 틀 + 확대/축소 + 상하좌우 이동 버튼 ---
@@ -402,7 +416,7 @@ class App(tk.Tk):
                                       self._on_edge_change)
         self.edge_slider.pack(fill="x", pady=2)
 
-        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=8)
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=4)
 
         # --- 포트 선택 + 쓰기 ---
         port_row = tk.Frame(parent)
@@ -422,7 +436,7 @@ class App(tk.Tk):
         # (백그라운드 감시 스레드가 _set_card_present()로 이 상태를 갱신합니다)
         self.start_btn = tk.Button(parent, text="배지를 리더에 태그해주세요", command=self._start_write,
                                     font=("", 11, "bold"), state="disabled")
-        self.start_btn.pack(fill="x", pady=6)
+        self.start_btn.pack(fill="x", pady=4)
 
         # 전송 완료 시 잠깐 나타났다가 사라지는 안내 배너 (제조사 앱과 동일한 느낌)
         self.success_banner = tk.Label(parent, text="", fg="white", bg="#2e7d32",
@@ -430,7 +444,7 @@ class App(tk.Tk):
         # 평소엔 pack 안 해둬서 공간을 차지하지 않다가, 완료 시에만 pack합니다.
 
         self.status_label = tk.Label(parent, text="이미지를 선택해주세요", wraplength=380, justify="left", anchor="w")
-        self.status_label.pack(fill="x", pady=4)
+        self.status_label.pack(fill="x", pady=2)
 
     def _build_right_panel(self, parent):
         tk.Label(parent, text="로그", font=("", 11, "bold")).pack(anchor="w")
