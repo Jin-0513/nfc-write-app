@@ -349,19 +349,24 @@ class App(tk.Tk):
 
         right = tk.Frame(root_frame)
         right.pack(side="left", fill="both", expand=True, padx=8, pady=8)
+        # left만 고정하고 right(로그 패널)는 그대로 뒀더니, 로그 패널 안의
+        # Text 위젯 등이 요구하는 자연 크기가 전체 창을 다시 키우는
+        # 원인이 됐습니다. right도 동일하게 고정합니다.
+        right.pack_propagate(False)
 
         self._build_left_panel(left)
         self._build_right_panel(right)
 
         # pack_propagate(False)를 쓰면 프레임이 "스스로는" 크기를 안
-        # 정하므로, 명시적으로 크기를 지정해줘야 합니다. 왼쪽 패널은
-        # 틀(400x600) + 그 아래 컨트롤들이 들어갈 만큼, 나머지는 root_frame이
-        # 알아서 채우게 둡니다.
-        # 틀(400px) + 확대/축소/상하좌우 버튼 열이 실제로 필요한 가로폭을
-        # 재보니 583px 정도였습니다(윈도우는 버튼이 더 커서 더 필요할 수
-        # 있어 여유를 둠). 이전에 430으로 너무 좁게 잡아서 버튼들이
-        # 잘려 보였던 문제를 수정했습니다.
+        # 정하므로, 명시적으로 크기를 지정해줘야 합니다.
+        # 왼쪽: 틀(400px) + 확대/축소/상하좌우 버튼 열이 실제로 필요한
+        # 가로폭을 재보니 583px 정도였습니다(윈도우는 버튼이 더 커서 더
+        # 필요할 수 있어 여유를 둠).
+        # 오른쪽: 창 전체 폭(948) - 왼쪽(620 + 좌우 padx 16) - 오른쪽
+        # 자신의 좌우 padx(16)를 뺀 나머지만큼만 줘서, 전체 폭이 절대
+        # 948을 넘지 않게 합니다.
         left.config(width=620, height=934)
+        right.config(width=948 - 16 - 620 - 16, height=934)
 
     def _build_left_panel(self, parent):
         # --- 틀 + 확대/축소 + 상하좌우 이동 버튼 ---
