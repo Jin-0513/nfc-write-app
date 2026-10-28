@@ -287,8 +287,8 @@ class App(tk.Tk):
         self.title("NFC 배지 쓰기")
         # 실제로 그려지는 창 크기가 요청값보다 약간(가로 +2px) 크게 나오는
         # 것을 확인해서, 최종 결과가 950x950이 되도록 가로를 948로 보정
-        self.geometry("948x950")
-        self.minsize(948, 950)
+        self.geometry("950x950")
+        self.minsize(950, 950)
 
         self.original_pil_image: Image.Image | None = None
         self.processed_array: np.ndarray | None = None
@@ -323,7 +323,7 @@ class App(tk.Tk):
         # 크기를 재계산해서 키우는 것으로 보입니다. 그래서 창이 실제로
         # 뜬 다음(after로 지연) geometry를 다시 한번 덮어써서, 그게
         # 최종 크기로 확실히 남도록 합니다.
-        self.after(150, lambda: self.geometry("948x950"))
+        self.after(150, lambda: self.geometry("950x950"))
 
         self.after(50, self._poll_log_queue)
         self.port_combo.bind("<<ComboboxSelected>>", lambda e: self._restart_monitor())
@@ -359,14 +359,12 @@ class App(tk.Tk):
 
         # pack_propagate(False)를 쓰면 프레임이 "스스로는" 크기를 안
         # 정하므로, 명시적으로 크기를 지정해줘야 합니다.
-        # 왼쪽: 틀(400px) + 확대/축소/상하좌우 버튼 열이 실제로 필요한
-        # 가로폭을 재보니 583px 정도였습니다(윈도우는 버튼이 더 커서 더
-        # 필요할 수 있어 여유를 둠).
-        # 오른쪽: 창 전체 폭(948) - 왼쪽(620 + 좌우 padx 16) - 오른쪽
-        # 자신의 좌우 padx(16)를 뺀 나머지만큼만 줘서, 전체 폭이 절대
-        # 948을 넘지 않게 합니다.
-        left.config(width=620, height=934)
-        right.config(width=948 - 16 - 620 - 16, height=934)
+        # 왼쪽: 520px 고정. 오른쪽: 창 전체 폭(950)에서 왼쪽 몫
+        # (520 + 좌우 padx 16)과 오른쪽 자신의 좌우 padx(16)를 뺀
+        # 나머지로 정확히 채워서, 둘을 합치면 항상 950이 되게 합니다.
+        LEFT_PANEL_WIDTH = 520
+        left.config(width=LEFT_PANEL_WIDTH, height=934)
+        right.config(width=950 - 16 - LEFT_PANEL_WIDTH - 16, height=934)
 
     def _build_left_panel(self, parent):
         # --- 틀 + 확대/축소 + 상하좌우 이동 버튼 ---
